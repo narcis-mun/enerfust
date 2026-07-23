@@ -310,53 +310,99 @@ let base=null;
    llancem mai un error que pari l'app: l'estat viu en memòria
    i el desat és best-effort.
 ============================================================ */
-/* Magatzem local. En un servidor propi fem servir localStorage (fiable i
-   sense connexió). Si l'eina corre dins d'un artefacte de Claude, on
-   localStorage està bloquejat, cau cap a window.storage. */
+/* Magatzem. Ordre de preferència:
+   1) Núvol (Supabase, via /api/data) — les dades es comparteixen entre
+      dispositius i persones. És la font de veritat.
+   2) Navegador (localStorage) — còpia local de seguretat. Serveix si es
+      talla internet i com a memòria cau.
+   Si el núvol no està configurat, l'eina funciona igual només amb (2). */
 const Store = (function(){
-  let mode = 'cap';
+  let localOk=false;
   try{
     if(typeof localStorage!=='undefined'){
-      const t='__enerfust_test__';
-      localStorage.setItem(t,'1'); localStorage.removeItem(t);
-      mode = 'local';
+      const t='__enerfust_test__'; localStorage.setItem(t,'1'); localStorage.removeItem(t); localOk=true;
     }
-  }catch(e){ /* bloquejat (mode privat o sandbox) */ }
-  if(mode==='cap' && typeof window!=='undefined' && window.storage) mode='claude';
+  }catch(e){}
+  const claudeOk = (!localOk && typeof window!=='undefined' && !!window.storage);
 
-  async function retry(fn){
-    let last;
-    for(let i=0;i<3;i++){
-      try{ return await fn(); }
-      catch(e){ last=e; await new Promise(r=>setTimeout(r, 250*(i+1))); }
-    }
-    throw last;
+  let cloud = null;          // null = encara no comprovat, true/false després
+  let cloudAvis = false;     // per no repetir l'avís de núvol caigut
+
+  async function api(action, key, value){
+    const r = await fetch('/api/data',{
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({action, key, value})
+    });
+    const j = await r.json().catch(()=>({}));
+    if(!r.ok) throw new Error(j.error||('HTTP '+r.status));
+    return j;
   }
+  function localGet(k){ try{ const v=localStorage.getItem(k); return v===null?null:{key:k,value:v}; }catch(e){ return null; } }
+  function localSet(k,v){ try{ localStorage.setItem(k,v); }catch(e){} }
+  function localDel(k){ try{ localStorage.removeItem(k); }catch(e){} }
+
   return {
-    available: mode!=='cap',
-    mode,
+    available: true,
+    get mode(){ return cloud ? 'núvol' : (localOk?'navegador':(claudeOk?'claude':'cap')); },
+    get alNuvol(){ return cloud===true; },
+
     async get(key){
-      if(mode==='local'){
-        const v=localStorage.getItem(key);
-        return v===null ? null : {key, value:v};
+      try{
+        // Si hi ha feina feta sense connexió i encara no pujada, té prioritat:
+        // la pugem al núvol abans de llegir res, per no perdre-la.
+        if(localOk && localGet('__pendent__'+key)){
+          const l=localGet(key);
+          if(l){
+            await api('set', key, l.value);       // si falla, saltem al catch
+            localDel('__pendent__'+key);
+            cloud = true;
+            return l;
+          }
+          localDel('__pendent__'+key);
+        }
+        const j = await api('get', key);
+        cloud = true;
+        if(j.found){ localSet(key, j.value); return {key, value:j.value}; }
+        // Encara no hi és al núvol: si el tenim al navegador, hi puja
+        const l = localOk ? localGet(key) : null;
+        if(l){ try{ await api('set', key, l.value); }catch(e){} return l; }
+        return null;
+      }catch(e){
+        cloud = false;
+        console.debug('[Store] núvol no disponible:', e.message);
+        if(localOk) return localGet(key);
+        if(claudeOk){ try{ return await window.storage.get(key,false); }catch(_){ return null; } }
+        return null;
       }
-      if(mode==='claude'){
-        try{ return await retry(()=>window.storage.get(key, false)); }
-        catch(e){ console.debug('[Store] get', key, e); return null; }
-      }
-      return null;
     },
+
     async set(key, value){
-      if(mode==='local'){ localStorage.setItem(key, value); return {key, value}; }
-      if(mode==='claude') return await retry(()=>window.storage.set(key, value, false));
-      throw new Error('cap magatzem disponible');
-    },
-    async del(key){
-      if(mode==='local'){ localStorage.removeItem(key); return; }
-      if(mode==='claude'){
-        try{ return await retry(()=>window.storage.delete(key, false)); }
-        catch(e){ console.debug('[Store] delete', key, e); }
+      if(localOk) localSet(key, value);           // còpia local sempre, i immediata
+      try{
+        await api('set', key, value);
+        cloud = true;
+        localDel('__pendent__'+key);              // ja sincronitzat
+        return {key, value};
+      }catch(e){
+        cloud = false;
+        // Marquem que aquest canvi encara no és al núvol, perquè en tornar
+        // la connexió pugem el nostre en lloc de baixar-ne un de vell.
+        localSet('__pendent__'+key, String(Date.now()));
+        if(!cloudAvis){
+          cloudAvis = true;
+          setTimeout(()=>{ cloudAvis=false; }, 30000);
+          try{ toast('Sense connexió amb el núvol: desat només en aquest dispositiu'); }catch(_){}
+        }
+        if(localOk) return {key, value};          // ja desat localment
+        if(claudeOk) return await window.storage.set(key, value, false);
+        throw e;
       }
+    },
+
+    async del(key){
+      if(localOk) localDel(key);
+      try{ await api('del', key); cloud=true; }
+      catch(e){ cloud=false; if(claudeOk){ try{ await window.storage.delete(key,false); }catch(_){}} }
     }
   };
 })();
@@ -906,8 +952,14 @@ async function callClaude(contentBlocks){
     if((resp.status===429 || resp.status>=500) && intent<MAX_INTENTS-1){
       await new Promise(r=>setTimeout(r, 1200*Math.pow(2,intent))); continue;
     }
-    if(resp.status===429) throw new Error("S'ha arribat al límit d'ús del compte de Claude (429): espera una estona i torna-ho a provar (o valora el pla Pro).");
-    throw new Error("Error de connexió amb la IA ("+resp.status+")");
+    if(resp.status===429) throw new Error("S'ha arribat al límit d'ús de l'API (429): espera una estona i torna-ho a provar.");
+    // Mostra el motiu real que envia el servidor (p. ex. falta la clau d'API),
+    // en lloc d'ensenyar només el número d'error.
+    let motiu='';
+    try{ const j=await resp.json(); motiu=(j&&j.error&&j.error.message)||''; }catch(e){}
+    if(resp.status===500 && /ANTHROPIC_API_KEY|api.?key/i.test(motiu))
+      throw new Error("Falta la clau d'API al servidor. A Vercel: Settings → Environment Variables → afegeix ANTHROPIC_API_KEY, i després Deployments → ⋯ → Redeploy.");
+    throw new Error("Error de connexió amb la IA ("+resp.status+")"+(motiu?": "+motiu.slice(0,200):""));
   }
   throw ultimError || new Error("No s'ha pogut connectar amb la IA.");
 }
