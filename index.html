@@ -469,20 +469,69 @@ function numsMatch(a,b){
   if(xa&&xa.length>=2&&xa===xb) return true;   /* '131/E' = '131', '72/C' = '72' */
   return false;
 }
+/* ============================================================
+   SINCRONITZACIÓ AMB LA BASE DE COSTOS
+   Validar un document l'incorpora a la base a l'instant (no cal passar
+   per l'Excel). Cada registre que hi entra per aquesta via queda marcat
+   amb l'origen 'app:<id>', per poder-lo treure si es desvalida o
+   s'esborra, i per no duplicar-lo quan després es pugi l'Excel que
+   ja el conté.
+   Posició del marcador: base.f[12] i base.l[11].
+============================================================ */
+const ORIG_F=12, ORIG_L=11;
+function origenApp(id){ return 'app:'+id; }
+function treuDeBase(id){
+  if(!base) return false;
+  const o=origenApp(id);
+  const nf=base.f.filter(f=>f[ORIG_F]!==o), nl=base.l.filter(l=>l[ORIG_L]!==o);
+  const canvi = nf.length!==base.f.length || nl.length!==base.l.length;
+  base.f=nf; base.l=nl;
+  return canvi;
+}
+/* Incorpora un document validat a la base. Torna true si hi ha hagut canvis. */
+function posaABase(d){
+  if(!base || d.estat!=='validat' || !d.obra) return false;
+  treuDeBase(d.id);                       // evita duplicar-lo si es revalida
+  const o=origenApp(d.id);
+  const imp=+(sumLinies(d)||num(d.baseImp)||num(d.total)).toFixed(2);
+  if(d.kind==='factura'){
+    const albs=(d.albaransCasats||[]).map(docById).filter(Boolean).map(a=>a.numDoc).filter(Boolean).join(', ');
+    base.f.push([d.obra,'',albs,d.proveidor||'','','',d.numDoc||'',d.data||'',imp,1,d.venciment||'','',o]);
+  }else{
+    base.f.push([d.obra,d.data||'',d.numDoc||'',d.proveidor||'','',imp,'','','',1,'','',o]);
+  }
+  for(const l of (d.linies||[])){
+    const nAlb = l.albara || (d.kind==='albara'? d.numDoc : '');
+    base.l.push([d.obra, d.data||'', d.kind==='factura'?(d.numDoc||''):'', nAlb||'',
+                 String(l.codi||'').slice(0,20), num(l.quantitat), String(l.concepte||'').slice(0,60),
+                 num(l.preu), num(l.dte)||0, +num(l.import).toFixed(2), d.proveidor||'', o]);
+  }
+  return true;
+}
+/* Crida-la sempre que un document canviï d'estat, d'obra o s'esborri. */
+async function sincronitzaBase(d, esborrat){
+  if(!base) return;
+  let canvi=false;
+  if(esborrat || !d || d.estat!=='validat') canvi = treuDeBase(d?d.id:esborrat);
+  else canvi = posaABase(d);
+  if(canvi){ base.src="Actualitzada per l'Alba"; base.updated=Date.now(); await saveBase(); drawBase(); }
+}
 function dupFactura(d){
   if(!base||d.kind!=='factura'||!d.numDoc||!d.proveidor) return null;
+  const propi=origenApp(d.id);
   for(const f of base.f)
-    if(f[6]&&sameProv(f[3],d.proveidor)&&numsMatch(d.numDoc,f[6]))
+    if(f[ORIG_F]!==propi&&f[6]&&sameProv(f[3],d.proveidor)&&numsMatch(d.numDoc,f[6]))
       return {obra:f[0],num:f[6],data:f[7],imp:f[8]};
   return null;
 }
 function albaraJaFacturat(d){
   if(!base||d.kind!=='albara'||!d.numDoc||!d.proveidor) return null;
+  const propi=origenApp(d.id);
   for(const l of base.l)
-    if(l[3]&&sameProv(l[10],d.proveidor)&&numsMatch(d.numDoc,l[3]))
+    if(l[ORIG_L]!==propi&&l[3]&&sameProv(l[10],d.proveidor)&&numsMatch(d.numDoc,l[3]))
       return {obra:l[0],fact:l[2],data:l[1]};
   for(const f of base.f)
-    if(f[2]&&sameProv(f[3],d.proveidor)&&numsMatch(d.numDoc,f[2]))
+    if(f[ORIG_F]!==propi&&f[2]&&sameProv(f[3],d.proveidor)&&numsMatch(d.numDoc,f[2]))
       return {obra:f[0],fact:f[6]||'— (entrat com a albarà)',data:f[1]||f[7]};
   return null;
 }
@@ -934,7 +983,14 @@ async function actualitzaBase(files){
               'perdries aquestes factures del control de duplicats.\n\nVols continuar igualment?');
             if(!ok){ toast(file.name+': importació cancel·lada'); continue; }
           }
-          base.f=nou; nF=nou.length;
+          // Conservem els registres que ha entrat l'app i que la Relació
+          // encara no porta; si la Relació ja els conté, mana la Relació
+          // (així no es dupliquen quan l'Alba hi enganxa les files).
+          const jaHi=new Set(nou.map(f=>[normProv(f[3]),normNum(f[6]||f[2]),normProv(f[0])].join('|')));
+          const app=base.f.filter(f=>f[ORIG_F] &&
+            !jaHi.has([normProv(f[3]),normNum(f[6]||f[2]),normProv(f[0])].join('|')));
+          base.f=nou.concat(app); nF=nou.length;
+          if(app.length) toast(app.length+' document(s) entrats a l\'eina s\'han conservat');
         }
         else toast(file.name+': no s\'hi han trobat factures');
       }else{
@@ -982,7 +1038,9 @@ async function actualitzaBase(files){
             'Vols continuar igualment?');
           if(!ok){ toast(file.name+': importació cancel·lada'); continue; }
         }
-        base.l=base.l.filter(l=>l[0]!==obra).concat(noves);
+        const factsFitxer=new Set(noves.map(l=>normNum(l[2])).filter(Boolean));
+        const appL=base.l.filter(l=>l[0]===obra && l[ORIG_L] && !factsFitxer.has(normNum(l[2])));
+        base.l=base.l.filter(l=>l[0]!==obra).concat(noves, appL);
         nL+=noves.length;
       }
     }catch(err){ console.error(err); toast('Error llegint '+file.name); }
@@ -1437,6 +1495,7 @@ async function esborraDoc(id){
   if(d.kind==='factura') [...d.albaransCasats].forEach(a=>descasa(d.id,a));
   state.docs=state.docs.filter(x=>x.id!==id);
   if(selId===id) selId=null;
+  await sincronitzaBase(null, id);       // treu-lo també de la base de costos
   render();
   const desat=await persistNow();
   toast(desat ? 'Document eliminat'
@@ -1688,8 +1747,12 @@ function lligaDetall(d){
     if(!d.obra){ toast('Assigna una obra abans de validar'); return; }
     if(!d.proveidor||!d.numDoc){ toast('Falta el proveïdor o el número de document'); return; }
     d.estat='validat'; persist(); render();
+    sincronitzaBase(d);                    // entra a la base a l'instant
+    toast('Validat i afegit a la base de costos ✓');
   };
-  const bd=det.querySelector('#btnDesvalida'); if(bd) bd.onclick=()=>{ d.estat='esborrany'; persist(); render(); };
+  const bd=det.querySelector('#btnDesvalida'); if(bd) bd.onclick=()=>{
+    d.estat='esborrany'; persist(); render(); sincronitzaBase(d);   // en surt
+  };
 
   det.querySelector('#btnTSV').onclick=()=>copiaTSV(d);
 }
@@ -1811,6 +1874,13 @@ document.getElementById('btnEsborraTot').onclick=async ()=>{
   }
   msg+='\n\nContinuar?';
   if(!await confirmaModal(msg)) return;
+  if(base){
+    const ids=state.docs.map(d=>origenApp(d.id));
+    const nf=base.f.filter(f=>!ids.includes(f[ORIG_F])), nl=base.l.filter(l=>!ids.includes(l[ORIG_L]));
+    if(nf.length!==base.f.length||nl.length!==base.l.length){
+      base.f=nf; base.l=nl; base.updated=Date.now(); await saveBase(); drawBase();
+    }
+  }
   state={docs:[],nextId:1}; selId=null;
   try{ await Store.set('enerfust_v1', serialitzaState()); }catch(e){}
   render();
