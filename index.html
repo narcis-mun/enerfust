@@ -267,7 +267,7 @@ table.linies .del:hover{color:var(--err)}
       <div style="display:flex;gap:10px;align-items:center;margin-bottom:8px;flex-wrap:wrap">
         <span class="seg"><button id="vistaF" class="on">Factures</button><button id="vistaL">Línies de detall</button><button id="vistaP">💶 Preus per material</button></span>
         <select id="baseObra" title="Filtra per obra" style="border:1px solid var(--line);border-radius:7px;padding:7px 9px;max-width:230px"></select>
-        <input id="baseQ" placeholder="Cerca per proveïdor, concepte, codi o nº…" style="flex:1;min-width:200px;border:1px solid var(--line);border-radius:7px;padding:7px 10px">
+        <input id="baseQ" placeholder="Cerca: escriu paraules soltes (p. ex. «tub coure 16»)…" style="flex:1;min-width:200px;border:1px solid var(--line);border-radius:7px;padding:7px 10px">
         <button class="btn small" id="baseExport" title="Baixa en Excel exactament el que estàs veient">⬇ Exporta la vista</button>
       </div>
       <table class="basetbl" id="baseTbl"></table>
@@ -668,6 +668,17 @@ function connectaOrdenacio(){
    columna «Codi» sovint no és un codi de material sinó un capítol, una
    data o una categoria (p. ex. «HT1» agrupa 130 conceptes diferents),
    i agrupar-hi barrejaria materials que no tenen res a veure. */
+/* Cerca per paraules: totes les paraules han de sortir, en qualsevol ordre
+   i sense importar accents ni majúscules. Així «unipipe 25» troba
+   «TUBO UNIPIPE 25X2,5», i «coure 16» troba «CABLE DE COURE 1x16». */
+function paraulesCerca(q){
+  return normMat(q).split(' ').filter(Boolean);
+}
+function coincideix(paraules, ...textos){
+  if(!paraules.length) return true;
+  const t=textos.map(x=>normMat(x)).join(' ');
+  return paraules.every(w=>t.includes(w));
+}
 function normMat(s){
   return String(s||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'')
     .toUpperCase().replace(/[^A-Z0-9 ]/g,' ').replace(/\s+/g,' ').trim();
@@ -727,6 +738,7 @@ function drawBase(){
   if(!base) return;
   const q=document.getElementById('baseQ').value||'';
   const qn=normProv(q), qd=normNum(q);
+  const pc=paraulesCerca(q);
   const obresF=new Set(base.f.map(f=>f[0]));
   const obresL=new Set(base.l.map(l=>l[0]));
   document.getElementById('baseStats').textContent=
@@ -752,7 +764,7 @@ function drawBase(){
 
   if(baseVista==='f'){
     tbl.style.minWidth='';
-    let rows=base.f.filter(filtraObra).filter(f=>!q || normProv(f[0]).includes(qn) || normProv(f[3]).includes(qn) ||
+    let rows=base.f.filter(filtraObra).filter(f=>!q || coincideix(pc,f[0],f[3]) ||
       (qd&&(normNum(f[6]).includes(qd)||normNum(f[2]).includes(qd))));
     // tipus de cada columna per ordenar-la bé
     rows=ordenaFiles(rows, baseSort.f, {0:'text',3:'text',6:'text',7:'data',8:'num',9:'num',10:'data',11:'text'});
@@ -803,9 +815,7 @@ function drawBase(){
     // partim de les línies (filtrades per obra) i les agrupem per material
     const base_l=base.l.filter(filtraObra);
     let mats=agrupaMaterials(base_l);
-    if(q) mats=mats.filter(m=> normProv(m.concepte).includes(qn) ||
-                               normProv(m.codi).includes(qn) ||
-                               [...m.provs].some(pv=>normProv(pv).includes(qn)));
+    if(q) mats=mats.filter(m=> coincideix(pc, m.concepte, m.codi, [...m.provs].join(' ')));
     const perClau=new Map(mats.map(m=>[m.clau,m]));
     let rows=filesMaterial(mats);
     rows=ordenaFiles(rows, baseSort.p, {0:'text',1:'text',2:'num',3:'num',4:'num',5:'num',6:'num',7:'num',8:'data',9:'text',10:'num'});
@@ -849,8 +859,7 @@ function drawBase(){
       `<br>Clica un material per veure totes les compres (data, obra, proveïdor i preu unitari). El <b>preu mitjà</b> és ponderat per quantitat. La marca ±% avisa que el preu ha ballat molt entre la compra més barata i la més cara.`;
   }else{
     tbl.style.minWidth='1080px';
-    let rows=base.l.filter(filtraObra).filter(l=>!q || normProv(l[0]).includes(qn) || normProv(l[10]).includes(qn) ||
-      normProv(l[6]).includes(qn) || normProv(l[4]).includes(qn) ||
+    let rows=base.l.filter(filtraObra).filter(l=>!q || coincideix(pc,l[0],l[10],l[6],l[4]) ||
       (qd&&(normNum(l[2]).includes(qd)||normNum(l[3]).includes(qd))));
     rows=ordenaFiles(rows, baseSort.l, {0:'text',1:'data',2:'text',3:'text',4:'text',5:'num',6:'text',7:'num',8:'num',9:'num',10:'text'});
     baseRowsVista=rows;
