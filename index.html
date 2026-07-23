@@ -191,6 +191,9 @@ table.linies .del:hover{color:var(--err)}
 .basetbl td.imp{text-align:right}
 .basetbl tr.frow{cursor:pointer}
 .basetbl tr.frow.sensedet{cursor:default}
+.base-del{border:none;background:transparent;color:#A9B6C2;cursor:pointer;font-size:15px;font-weight:700;
+  line-height:1;padding:2px 5px;border-radius:5px}
+.base-del:hover{background:var(--err-soft);color:var(--err)}
 .basetbl tr.frow.sensedet .caret{color:#C8D2DA}
 .basetbl tr.frow.sensedet td:first-child{color:var(--ink-soft)}
 .basetbl tr.frow:hover td{background:#EFF4F8}
@@ -543,6 +546,30 @@ async function sincronitzaBase(d, esborrat){
   if(canvi){ base.src="Actualitzada per l'Alba"; base.updated=Date.now(); await saveBase(); drawBase(); }
 }
 /* Clau estable d'una fila de la base (per vincular-hi documents) */
+/* Esborra una factura concreta de la base de costos (amb el seu detall).
+   Fa còpia de seguretat abans, per poder-ho desfer. */
+async function esborraFilaBase(clau){
+  const i=base.f.findIndex(x=>clauBaseF(x)===clau);
+  if(i<0){ toast('Ja no hi és'); return; }
+  const f=base.f[i];
+  const ls=liniesDeFactura(f);
+  const delExcel=!f[ORIG_F];
+  const ok=await confirmaModal(
+    'Eliminar aquesta factura de la base de costos?\n\n'+
+    (f[3]||'')+' · nº '+(f[6]||f[2]||'')+' · '+(f[0]||'')+'\n'+
+    (f[7]||f[1]||'')+' · '+fmt(num(f[8])||num(f[5]))+' €'+
+    (ls.length? '\n\nS\'esborraran també les seves '+ls.length+' línies de detall.':'')+
+    (delExcel? '\n\n⚠ Aquesta factura ve del teu Excel. Si més endavant hi tornes a pujar la Relació de costos, hi tornarà a sortir.':''));
+  if(!ok) return;
+  await backupBase();
+  const claus=new Set(ls.map(l=>l.join('\u0001')));
+  base.l=base.l.filter(l=>!claus.has(l.join('\u0001')));
+  base.f.splice(i,1);
+  base.updated=Date.now();
+  baseExpandit=null;
+  await saveBase(); drawBase(); render();
+  toast('Eliminada de la base · pots desfer-ho amb «↩ Desfés l\'última actualització»');
+}
 function clauBaseF(f){ return [f[0],f[3],f[6]||f[2],f[7]||f[1]].join('|'); }
 
 /* Busca a la base factures que probablement siguin AQUEST document, encara
@@ -1048,7 +1075,7 @@ function drawBase(){
     baseRowsVista=rows;
     const claus=new Set();
     tbl.innerHTML=
-      `<thead><tr>${th('Obra',0,'f')}${th('Proveïdor',3,'f')}${th('Factura / Albarà',6,'f')}${th('Data',7,'f')}${th('Import',8,'f','right')}${th('● passat a costos',9,'f')}${th('Venc.',10,'f')}${th('Pagat',11,'f')}</tr></thead><tbody>`+
+      `<thead><tr>${th('Obra',0,'f')}${th('Proveïdor',3,'f')}${th('Factura / Albarà',6,'f')}${th('Data',7,'f')}${th('Import',8,'f','right')}${th('● passat a costos',9,'f')}${th('Venc.',10,'f')}${th('Pagat',11,'f')}<th style="width:28px"></th></tr></thead><tbody>`+
       rows.slice(0,BASE_MAX).map(f=>{
         const clau=[f[0],f[3],f[6]||f[2],f[7]||f[1]].join('|'); claus.add(clau);
         const obert = baseExpandit===clau;
@@ -1058,7 +1085,9 @@ function drawBase(){
           `<td><span class="caret">${teDetall?(obert?'▾':'▸'):'·'}</span>${esc(f[0])}</td><td>${esc(f[3])}</td>`+
           `<td class="mono">${esc(f[6]||f[2])}</td><td>${esc(f[7]||f[1])}</td>`+
           `<td class="imp">${fmt(f[8]||f[5])}</td><td style="text-align:center">${f[9]?'●':''}</td>`+
-          `<td>${esc(f[10])}</td><td>${esc(f[11])}</td></tr>`;
+          `<td>${esc(f[10])}</td><td>${esc(f[11])}</td>`+
+          `<td style="text-align:center;padding:0"><button class="base-del" data-delf="${esc(clau)}" `+
+          `title="Elimina aquesta factura de la base de costos">×</button></td></tr>`;
         if(obert){
           const ls=liniesDeFactura(f);
           if(ls.length){
@@ -1070,7 +1099,7 @@ function drawBase(){
                  ? `<span class="badge-warn">◐ coincidència probable — revisa-la</span>`
                  : `<span class="badge-err">✗ no quadra</span>`);
             const quadra = ` ${pastilla} <span class="small-note">${esc(fi.motius.join(' · '))}</span>`;
-            html+=`<tr class="expandrow"><td colspan="8"><table class="subtbl">`+
+            html+=`<tr class="expandrow"><td colspan="9"><table class="subtbl">`+
               `<thead><tr><th>Data</th><th>Nº Albarà</th><th>Codi</th><th>Concepte</th><th style="text-align:right">Quant.</th><th style="text-align:right">Preu</th><th style="text-align:right">% dte</th><th style="text-align:right">Import</th></tr></thead><tbody>`+
               ls.map(l=>`<tr><td>${esc(l[1])}</td><td class="mono">${esc(l[3])}</td><td class="mono">${esc(l[4])}</td><td title="${esc(l[6])}">${esc(l[6])}</td><td class="imp">${l[5]||''}</td><td class="imp">${l[7]?fmt(l[7]):''}</td><td class="imp">${l[8]||''}</td><td class="imp">${fmt(l[9])}</td></tr>`).join('')+
               `</tbody></table><div class="small-note" style="margin-top:6px">${ls.length} línies — suma ${fmt(suma)} €${quadra}</div></td></tr>`;
@@ -1078,15 +1107,19 @@ function drawBase(){
             const sense = obresL.has(f[0])
               ? `Aquesta factura no té línia a línia a la base (no surt al fitxer «Factures ${esc(f[0])}» carregat).`
               : `L'obra ${esc(f[0])} no té cap fitxer «Factures [obra]» carregat: només hi ha el nivell de factura. Puja el seu .ods des d'«Actualitza» per veure'n el desglossament.`;
-            html+=`<tr class="expandrow"><td colspan="8"><span class="small-note">${sense}</span></td></tr>`;
+            html+=`<tr class="expandrow"><td colspan="9"><span class="small-note">${sense}</span></td></tr>`;
           }
         }
         return html;
       }).join('')+`</tbody>`;
     if(baseExpandit && !claus.has(baseExpandit)) baseExpandit=null;
-    tbl.querySelectorAll('tr.frow').forEach(tr=>tr.onclick=()=>{
-      baseExpandit = (baseExpandit===tr.dataset.clau) ? null : tr.dataset.clau;
-      drawBase();
+    tbl.querySelectorAll('tr.frow').forEach(tr=>{
+      if(tr.classList.contains('sensedet')) return;   // sense detall: no desplega
+      tr.onclick=()=>{ baseExpandit=(baseExpandit===tr.dataset.clau)?null:tr.dataset.clau; drawBase(); };
+    });
+    tbl.querySelectorAll('.base-del').forEach(b=>b.onclick=async e=>{
+      e.stopPropagation();
+      await esborraFilaBase(b.dataset.delf);
     });
     connectaOrdenacio();
     const suma=rows.reduce((a,f)=>a+num(f[8]||f[5]),0);
