@@ -266,7 +266,9 @@ table.linies .del:hover{color:var(--err)}
     <div class="modal-b">
       <div style="display:flex;gap:10px;align-items:center;margin-bottom:8px;flex-wrap:wrap">
         <span class="seg"><button id="vistaF" class="on">Factures</button><button id="vistaL">Línies de detall</button></span>
-        <input id="baseQ" placeholder="Cerca per obra, proveïdor, concepte, codi o nº…" style="flex:1;min-width:220px;border:1px solid var(--line);border-radius:7px;padding:7px 10px">
+        <select id="baseObra" title="Filtra per obra" style="border:1px solid var(--line);border-radius:7px;padding:7px 9px;max-width:230px"></select>
+        <input id="baseQ" placeholder="Cerca per proveïdor, concepte, codi o nº…" style="flex:1;min-width:200px;border:1px solid var(--line);border-radius:7px;padding:7px 10px">
+        <button class="btn small" id="baseExport" title="Baixa en Excel exactament el que estàs veient">⬇ Exporta la vista</button>
       </div>
       <table class="basetbl" id="baseTbl"></table>
       <div class="small-note" id="baseFoot" style="margin-top:8px"></div>
@@ -524,6 +526,81 @@ document.getElementById('vistaF').onclick=()=>{ baseVista='f'; drawBase(); };
 document.getElementById('vistaL').onclick=()=>{ baseVista='l'; drawBase(); };
 document.getElementById('baseUpload').addEventListener('change', async e=>{ await actualitzaBase([...e.target.files]); e.target.value=''; });
 document.getElementById('baseUndo').onclick=()=>desfesBase();
+document.getElementById('baseObra').onchange=e=>{ baseObraSel=e.target.value; baseExpandit=null; drawBase(); };
+function nomFullUnic(nom, usats){
+  let n=String(nom).replace(/[\\\/\?\*\[\]:]/g,' ').slice(0,31)||'Full';
+  const b=n; let k=2;
+  while(usats.has(n)){ n=b.slice(0,28)+' '+(k++); }
+  usats.add(n); return n;
+}
+/* Exporta cada obra en un full, amb les mateixes columnes que els fitxers
+   «Factures [obra]». Serveix per regenerar-los o per enviar-los a algú. */
+function exportaPerObres(){
+  const HDR=['id','Data','Nº Factura','Família','Capítol','Nº Abarà','Codi','Quantitat','Concepte','Preu','% descompte','Import','Proveidor'];
+  const obres=[...new Set(base.l.map(l=>l[0]))].sort((a,b)=>a.localeCompare(b,'ca'));
+  if(!obres.length){ toast('No hi ha línies de detall a la base'); return; }
+  const wb=XLSX.utils.book_new(), usats=new Set();
+  for(const o of obres){
+    const ls=base.l.filter(l=>l[0]===o)
+      .sort((a,b)=>String(a[1]||'').localeCompare(String(b[1]||'')));
+    const rows=[HDR];
+    ls.forEach((l,i)=>rows.push([i+1,l[1],l[2],'','',l[3],l[4],num(l[5]),l[6],num(l[7]),num(l[8]),num(l[9]),l[10]]));
+    const ws=XLSX.utils.aoa_to_sheet(rows);
+    ws['!cols']=[{wch:4},{wch:11},{wch:12},{wch:9},{wch:9},{wch:13},{wch:14},{wch:9},{wch:42},{wch:9},{wch:9},{wch:11},{wch:20}];
+    XLSX.utils.book_append_sheet(wb,ws,nomFullUnic('Factures '+o,usats));
+  }
+  XLSX.writeFile(wb, new Date().toISOString().slice(0,10).replace(/-/g,'')+' Enerfust - detall per obres.xlsx');
+  toast(obres.length+' obres exportades ✓');
+}
+/* Resum de costos: una fila per obra, amb totals. Per al seguiment. */
+function exportaResumObres(){
+  const map={};
+  base.f.forEach(f=>{ const o=f[0]||'(sense obra)';
+    (map[o]=map[o]||{fact:0,lin:0,impF:0,impL:0,provs:new Set()});
+    map[o].fact++; map[o].impF+=num(f[8]||f[5]); if(f[3]) map[o].provs.add(f[3]); });
+  base.l.forEach(l=>{ const o=l[0]||'(sense obra)';
+    (map[o]=map[o]||{fact:0,lin:0,impF:0,impL:0,provs:new Set()});
+    map[o].lin++; map[o].impL+=num(l[9]); if(l[10]) map[o].provs.add(l[10]); });
+  const obres=Object.keys(map).sort((a,b)=>map[b].impF-map[a].impF);
+  const rows=[['OBRA','Nº FACTURES','IMPORT FACTURAT','Nº LÍNIES DETALL','IMPORT DETALL','DIFERÈNCIA','PROVEÏDORS']];
+  let tF=0,tL=0;
+  obres.forEach(o=>{ const m=map[o]; tF+=m.impF; tL+=m.impL;
+    rows.push([o,m.fact,+m.impF.toFixed(2),m.lin,+m.impL.toFixed(2),
+               m.lin?+(m.impL-m.impF).toFixed(2):'',m.provs.size]); });
+  rows.push([]); rows.push(['TOTAL','',+tF.toFixed(2),'',+tL.toFixed(2),'','']);
+  const ws=XLSX.utils.aoa_to_sheet(rows);
+  ws['!cols']=[{wch:26},{wch:12},{wch:16},{wch:16},{wch:15},{wch:13},{wch:12}];
+  const wb=XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb,ws,'Resum per obra');
+  XLSX.writeFile(wb, new Date().toISOString().slice(0,10).replace(/-/g,'')+' Enerfust - resum costos per obra.xlsx');
+  toast('Resum exportat ✓');
+}
+document.getElementById('baseExport').onclick=async ()=>{
+  const opt=await triaModal('Què vols exportar?',[
+    'El que estic veient ara'+(baseObraSel?' ('+baseObraSel+')':' (totes les obres)'),
+    'Cada obra en un full — format «Factures [obra]»',
+    'Resum de costos per obra (una fila per obra)'
+  ]);
+  if(!opt) return;
+  if(opt.startsWith('Cada obra')) return exportaPerObres();
+  if(opt.startsWith('Resum'))     return exportaResumObres();
+  if(!baseRowsVista.length){ toast('No hi ha res per exportar'); return; }
+  const wb=XLSX.utils.book_new();
+  let rows;
+  if(baseVista==='f'){
+    rows=[['Obra','Data albarà','Nº Albarà','Proveïdor','Naturalesa','Import albarà','Nº Factura','Data factura','Import factura','Pagat','Venciment']];
+    baseRowsVista.forEach(f=>rows.push([f[0],f[1],f[2],f[3],f[4],num(f[5]),f[6],f[7],num(f[8]),f[9]?'●':'',f[10]]));
+  }else{
+    rows=[['Obra','Data','Nº Factura','Nº Albarà','Codi','Quantitat','Concepte','Preu','% descompte','Import','Proveïdor']];
+    baseRowsVista.forEach(l=>rows.push([l[0],l[1],l[2],l[3],l[4],num(l[5]),l[6],num(l[7]),num(l[8]),num(l[9]),l[10]]));
+  }
+  const ws=XLSX.utils.aoa_to_sheet(rows);
+  ws['!cols']=rows[0].map((_,i)=>({wch: i===6&&baseVista==='l' ? 42 : 14}));
+  XLSX.utils.book_append_sheet(wb,ws, baseVista==='f'?'Factures':'Línies');
+  const sufix=(baseObraSel||'totes les obres').replace(/[\\\/\?\*\[\]:]/g,' ').slice(0,40);
+  XLSX.writeFile(wb, new Date().toISOString().slice(0,10).replace(/-/g,'')+' Enerfust - '+sufix+'.xlsx');
+  toast('Exportat ✓');
+};
 document.getElementById('baseRestore').onclick=async ()=>{
   if(!await confirmaModal('Tornar a la base original (la dels fitxers pujats a Claude el 22/07/2026)?')) return;
   base=JSON.parse(JSON.stringify(BASE_EMBEDDED));
@@ -532,6 +609,28 @@ document.getElementById('baseRestore').onclick=async ()=>{
 };
 let baseVista='f';
 let baseExpandit=null;
+let baseObraSel='';                 // '' = totes les obres
+let baseRowsVista=[];               // files que es veuen ara (per exportar)
+let baseSort={f:null, l:null};      // {idx, dir} per vista
+const BASE_MAX=1000;                // files que es dibuixen com a màxim
+
+/* Ordena una llista de files per una columna. `tipus` diu com comparar. */
+function ordenaFiles(rows, sort, tipus){
+  if(!sort) return rows;
+  const {idx,dir}=sort, t=tipus[idx]||'text';
+  return rows.slice().sort((a,b)=>{
+    let x=a[idx], y=b[idx];
+    if(t==='num'){ x=num(x); y=num(y); return (x-y)*dir; }
+    if(t==='data'){ x=String(x||''); y=String(y||''); return x.localeCompare(y)*dir; }
+    return String(x==null?'':x).localeCompare(String(y==null?'':y),'ca',{numeric:true})*dir;
+  });
+}
+/* Capçalera clicable amb la fletxa d'ordenació */
+function th(txt, idx, vista, align){
+  const s=baseSort[vista];
+  const fl = s && s.idx===idx ? (s.dir===1?' ▲':' ▼') : '';
+  return `<th data-sort="${idx}" style="cursor:pointer;user-select:none${align?';text-align:'+align:''}" title="Clica per ordenar">${txt}${fl}</th>`;
+}
 
 /* Relaciona nº de factura del full de Relació amb el de les línies (.ods),
    acceptant el patró any+zeros: '39' <-> '2500039', '172' <-> '2600172' */
@@ -552,6 +651,17 @@ function liniesDeFactura(f){
     (!l[10]||!f[3]||sameProv(l[10],f[3])) );
 }
 
+/* Connecta els clics d'ordenació de les capçaleres (es torna a cridar
+   cada cop que es repinta la taula). */
+function connectaOrdenacio(){
+  const tbl=document.getElementById('baseTbl');
+  tbl.querySelectorAll('th[data-sort]').forEach(t=>t.onclick=()=>{
+    const idx=+t.dataset.sort, v=baseVista;
+    const s=baseSort[v];
+    baseSort[v] = (s && s.idx===idx) ? {idx, dir:-s.dir} : {idx, dir:1};
+    drawBase();
+  });
+}
 function drawBase(){
   if(!base) return;
   const q=document.getElementById('baseQ').value||'';
@@ -561,6 +671,18 @@ function drawBase(){
   document.getElementById('baseStats').textContent=
     `${base.f.length} factures (${obresF.size} obres) · ${base.l.length} línies de detall (${obresL.size} obres) — ${base.src||''}`+
     (base.updated?` · actualitzada ${new Date(base.updated).toLocaleDateString('ca-ES')}`:'');
+  // desplegable d'obres (amb el nombre de registres de cada una)
+  const sel=document.getElementById('baseObra');
+  if(sel){
+    const compta={};
+    (baseVista==='f'?base.f:base.l).forEach(r=>{ compta[r[0]]=(compta[r[0]]||0)+1; });
+    const obres=Object.keys(compta).sort((a,b)=>a.localeCompare(b,'ca'));
+    const total=(baseVista==='f'?base.f:base.l).length;
+    if(baseObraSel && !compta[baseObraSel]) baseObraSel='';
+    sel.innerHTML=`<option value="">Totes les obres (${total})</option>`+
+      obres.map(o=>`<option value="${esc(o)}"${o===baseObraSel?' selected':''}>${esc(o)} (${compta[o]})</option>`).join('');
+  }
+  const filtraObra = r => !baseObraSel || r[0]===baseObraSel;
   const bF=document.getElementById('vistaF'), bL=document.getElementById('vistaL');
   bF.classList.toggle('on', baseVista==='f'); bL.classList.toggle('on', baseVista==='l');
   bF.textContent=`Factures (${base.f.length})`; bL.textContent=`Línies de detall (${base.l.length})`;
@@ -568,12 +690,15 @@ function drawBase(){
 
   if(baseVista==='f'){
     tbl.style.minWidth='';
-    const rows=base.f.filter(f=>!q || normProv(f[0]).includes(qn) || normProv(f[3]).includes(qn) ||
+    let rows=base.f.filter(filtraObra).filter(f=>!q || normProv(f[0]).includes(qn) || normProv(f[3]).includes(qn) ||
       (qd&&(normNum(f[6]).includes(qd)||normNum(f[2]).includes(qd))));
+    // tipus de cada columna per ordenar-la bé
+    rows=ordenaFiles(rows, baseSort.f, {0:'text',3:'text',6:'text',7:'data',8:'num',9:'num',10:'data',11:'text'});
+    baseRowsVista=rows;
     const claus=new Set();
     tbl.innerHTML=
-      `<thead><tr><th>Obra</th><th>Proveïdor</th><th>Factura / Albarà</th><th>Data</th><th style="text-align:right">Import</th><th>●</th><th>Venc.</th><th>Pagat</th></tr></thead><tbody>`+
-      rows.slice(0,400).map(f=>{
+      `<thead><tr>${th('Obra',0,'f')}${th('Proveïdor',3,'f')}${th('Factura / Albarà',6,'f')}${th('Data',7,'f')}${th('Import',8,'f','right')}${th('●',9,'f')}${th('Venc.',10,'f')}${th('Pagat',11,'f')}</tr></thead><tbody>`+
+      rows.slice(0,BASE_MAX).map(f=>{
         const clau=[f[0],f[3],f[6]||f[2],f[7]||f[1]].join('|'); claus.add(clau);
         const obert = baseExpandit===clau;
         let html=`<tr class="frow ${obert?'obert':''}" data-clau="${esc(clau)}">`+
@@ -607,21 +732,25 @@ function drawBase(){
       baseExpandit = (baseExpandit===tr.dataset.clau) ? null : tr.dataset.clau;
       drawBase();
     });
+    connectaOrdenacio();
     const suma=rows.reduce((a,f)=>a+num(f[8]||f[5]),0);
-    foot.innerHTML=`${rows.length} factures — total ${fmt(suma)} €`+(rows.length>400?" (se'n mostren les primeres 400)":'')+
+    foot.innerHTML=`${rows.length} factures — total ${fmt(suma)} €`+(rows.length>BASE_MAX?` (se'n mostren les primeres ${BASE_MAX})`:'')+
       `<br>Clica una factura per veure'n el desglossament línia a línia (disponible a les obres amb .ods carregat).`;
   }else{
     tbl.style.minWidth='1080px';
-    const rows=base.l.filter(l=>!q || normProv(l[0]).includes(qn) || normProv(l[10]).includes(qn) ||
+    let rows=base.l.filter(filtraObra).filter(l=>!q || normProv(l[0]).includes(qn) || normProv(l[10]).includes(qn) ||
       normProv(l[6]).includes(qn) || normProv(l[4]).includes(qn) ||
       (qd&&(normNum(l[2]).includes(qd)||normNum(l[3]).includes(qd))));
+    rows=ordenaFiles(rows, baseSort.l, {0:'text',1:'data',2:'text',3:'text',4:'text',5:'num',6:'text',7:'num',8:'num',9:'num',10:'text'});
+    baseRowsVista=rows;
     tbl.innerHTML=
-      `<thead><tr><th>Obra</th><th>Data</th><th>Factura</th><th>Nº Albarà</th><th>Codi</th><th>Concepte</th><th style="text-align:right">Quant.</th><th style="text-align:right">Preu</th><th style="text-align:right">% dte</th><th style="text-align:right">Import</th><th>Proveïdor</th></tr></thead><tbody>`+
-      rows.slice(0,400).map(l=>
+      `<thead><tr>${th('Obra',0,'l')}${th('Data',1,'l')}${th('Factura',2,'l')}${th('Nº Albarà',3,'l')}${th('Codi',4,'l')}${th('Concepte',6,'l')}${th('Quant.',5,'l','right')}${th('Preu',7,'l','right')}${th('% dte',8,'l','right')}${th('Import',9,'l','right')}${th('Proveïdor',10,'l')}</tr></thead><tbody>`+
+      rows.slice(0,BASE_MAX).map(l=>
         `<tr><td>${esc(l[0])}</td><td>${esc(l[1])}</td><td class="mono">${esc(l[2])}</td><td class="mono">${esc(l[3])}</td><td class="mono">${esc(l[4])}</td><td title="${esc(l[6])}">${esc(l[6])}</td><td class="imp">${l[5]||''}</td><td class="imp">${l[7]?fmt(l[7]):''}</td><td class="imp">${l[8]||''}</td><td class="imp">${fmt(l[9])}</td><td>${esc(l[10])}</td></tr>`).join('')+
       `</tbody>`;
+    connectaOrdenacio();
     const suma=rows.reduce((a,l)=>a+num(l[9]),0);
-    foot.innerHTML=`${rows.length} línies — total ${fmt(suma)} €`+(rows.length>400?" (se'n mostren les primeres 400)":'')+
+    foot.innerHTML=`${rows.length} línies — total ${fmt(suma)} €`+(rows.length>BASE_MAX?` (se'n mostren les primeres ${BASE_MAX})`:'')+
       `<br>Hi ha línia a línia de ${obresL.size} obres: les dels fitxers «Factures [obra]» (.ods) carregats. La Relació de costos només porta el nivell de factura; per ampliar el detall d'altres obres, puja els seus .ods des d'«Actualitza».`;
   }
 }
