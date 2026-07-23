@@ -199,6 +199,7 @@ table.linies .del:hover{color:var(--err)}
 .subtbl td{padding:2.5px 6px;border-bottom:1px solid #EDF1F4;max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .subtbl td.imp,.subtbl td.mono{font-family:var(--mono)}
 .subtbl td.imp{text-align:right}
+.badge-warn{font-size:10px;font-weight:800;color:var(--warn);background:var(--warn-soft);border-radius:4px;padding:1px 6px}
 .dupbadge{font-size:10px;font-weight:800;color:var(--err);background:var(--err-soft);border-radius:4px;padding:1px 6px;letter-spacing:.03em}
 .warnbox{border:1px solid #E5B4B1;background:var(--err-soft);color:#7C1D17;border-radius:8px;padding:8px 12px;font-size:12.5px;margin:0 0 12px}
 .sugrow{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 12px;align-items:center}
@@ -696,12 +697,57 @@ function numsMatchAmpli(a,b){
     const any=llarg.slice(0,2), resta=llarg.slice(2).replace(/^0+/,'');
     if(any>='20'&&any<='29'&&resta===curt.replace(/^0+/,'')) return true;
   }
+  /* Alguns proveïdors (p. ex. SUPPLAID) fan servir el número llarg als
+     albarans i el curt a la Relació: 604500946 = 946 (prefix + zeros).
+     Acceptem el número curt si és el final del llarg, amb zeros al davant
+     o sense. Només s'aplica dins de la mateixa obra i proveïdor, així que
+     el risc de confondre dues factures és mínim. */
+  const nu=curt.replace(/^0+/,'');
+  if(nu.length>=3 && llarg.length>nu.length){
+    for(let pad=0; pad<=4; pad++){
+      if(llarg.endsWith(nu.padStart(nu.length+pad,'0'))) return true;
+    }
+  }
   return false;
 }
+/* Distància en dies entre dues dates ISO (o null si no es poden llegir) */
+function diesEntre(a,b){
+  const x=Date.parse(String(a||'')), y=Date.parse(String(b||''));
+  if(isNaN(x)||isNaN(y)) return null;
+  return Math.abs(x-y)/86400000;
+}
+/* Línies de detall d'una factura.
+   El número exacte ja és prou garantia. Quan només encaixa pel final
+   (p. ex. 946 dins de 604500946), demanem a més que la DATA sigui
+   compatible: així no barregem dues factures diferents del mateix
+   proveïdor que casualment acabin igual. */
 function liniesDeFactura(f){
   if(!base||!f[6]) return [];
-  return base.l.filter(l=> l[0]===f[0] && l[2] && numsMatchAmpli(l[2],f[6]) &&
-    (!l[10]||!f[3]||sameProv(l[10],f[3])) );
+  return base.l.filter(l=>{
+    if(l[0]!==f[0] || !l[2]) return false;
+    if(l[10] && f[3] && !sameProv(l[10],f[3])) return false;
+    if(numsMatch(l[2],f[6])) return true;              // número clar
+    if(!numsMatchAmpli(l[2],f[6])) return false;       // ni pel final
+    const d=diesEntre(l[1], f[7]);                     // pel final: mirem la data
+    return d===null ? true : d<=45;
+  });
+}
+/* Semàfor de fiabilitat d'una factura i el seu desglossament. */
+function fiabilitatFactura(f, linies){
+  const impF=num(f[8]);
+  const suma=linies.reduce((a,l)=>a+num(l[9]),0);
+  const numOk=linies.some(l=>numsMatch(l[2],f[6]));
+  const dates=linies.map(l=>diesEntre(l[1],f[7])).filter(d=>d!==null);
+  const dataOk=dates.length? Math.min(...dates)<=45 : null;
+  const sumaOk=impF>0 ? Math.abs(suma-impF)<0.05 : null;
+  let nivell='ok', motius=[];
+  if(numOk) motius.push('número exacte'); else motius.push('número pel final');
+  if(dataOk===true) motius.push('data coincident');
+  else if(dataOk===false){ motius.push('data allunyada'); nivell='dubte'; }
+  if(sumaOk===true) motius.push('import quadra');
+  else if(sumaOk===false){ motius.push('import no quadra ('+fmt(Math.abs(suma-impF))+' € de diferència)'); nivell='malament'; }
+  if(!numOk && nivell==='ok') nivell='dubte';
+  return {nivell, motius, suma, impF};
 }
 
 /* Connecta els clics d'ordenació de les capçaleres (es torna a cridar
@@ -893,11 +939,14 @@ function drawBase(){
         if(obert){
           const ls=liniesDeFactura(f);
           if(ls.length){
-            const suma=ls.reduce((a,l)=>a+num(l[9]),0);
-            const impF=num(f[8]);
-            const quadra = impF>0 ? (Math.abs(suma-impF)<0.05
-              ? ` <span class="badge-ok">✓ quadra amb la factura</span>`
-              : ` <span class="badge-err">✗ difereix de la factura en ${fmt(Math.abs(suma-impF))} €</span>`) : '';
+            const fi=fiabilitatFactura(f, ls);
+            const suma=fi.suma;
+            const pastilla = fi.nivell==='ok'
+              ? `<span class="badge-ok">● coincidència segura</span>`
+              : (fi.nivell==='dubte'
+                 ? `<span class="badge-warn">◐ coincidència probable — revisa-la</span>`
+                 : `<span class="badge-err">✗ no quadra</span>`);
+            const quadra = ` ${pastilla} <span class="small-note">${esc(fi.motius.join(' · '))}</span>`;
             html+=`<tr class="expandrow"><td colspan="8"><table class="subtbl">`+
               `<thead><tr><th>Data</th><th>Nº Albarà</th><th>Codi</th><th>Concepte</th><th style="text-align:right">Quant.</th><th style="text-align:right">Preu</th><th style="text-align:right">% dte</th><th style="text-align:right">Import</th></tr></thead><tbody>`+
               ls.map(l=>`<tr><td>${esc(l[1])}</td><td class="mono">${esc(l[3])}</td><td class="mono">${esc(l[4])}</td><td title="${esc(l[6])}">${esc(l[6])}</td><td class="imp">${l[5]||''}</td><td class="imp">${l[7]?fmt(l[7]):''}</td><td class="imp">${l[8]||''}</td><td class="imp">${fmt(l[9])}</td></tr>`).join('')+
