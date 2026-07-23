@@ -267,7 +267,7 @@ table.linies .del:hover{color:var(--err)}
       <div style="display:flex;gap:10px;align-items:center;margin-bottom:8px;flex-wrap:wrap">
         <span class="seg"><button id="vistaF" class="on">Factures</button><button id="vistaL">Línies de detall</button><button id="vistaP">💶 Preus per material</button></span>
         <select id="baseObra" title="Filtra per obra" style="border:1px solid var(--line);border-radius:7px;padding:7px 9px;max-width:230px"></select>
-        <input id="baseQ" placeholder="Cerca: escriu paraules soltes (p. ex. «tub coure 16»)…" style="flex:1;min-width:200px;border:1px solid var(--line);border-radius:7px;padding:7px 10px">
+        <input id="baseQ" placeholder="Cerca: proveïdor, nº factura, material… (p. ex. «saltoki 2026» o «tub coure 16»)" style="flex:1;min-width:200px;border:1px solid var(--line);border-radius:7px;padding:7px 10px">
         <button class="btn small" id="baseExport" title="Baixa en Excel exactament el que estàs veient">⬇ Exporta la vista</button>
       </div>
       <table class="basetbl" id="baseTbl"></table>
@@ -764,8 +764,11 @@ function drawBase(){
 
   if(baseVista==='f'){
     tbl.style.minWidth='';
-    let rows=base.f.filter(filtraObra).filter(f=>!q || coincideix(pc,f[0],f[3]) ||
-      (qd&&(normNum(f[6]).includes(qd)||normNum(f[2]).includes(qd))));
+    // Totes les paraules han de coincidir, mirant obra, proveïdor i els
+    // números de factura i albarà alhora. Així «saltoki 2026» filtra per
+    // proveïdor I número, en lloc de barrejar-ho.
+    let rows=base.f.filter(filtraObra).filter(f=>!q ||
+      coincideix(pc, f[0], f[3], f[2], f[6], f[1], f[7], normNum(f[2]), normNum(f[6])));
     // tipus de cada columna per ordenar-la bé
     rows=ordenaFiles(rows, baseSort.f, {0:'text',3:'text',6:'text',7:'data',8:'num',9:'num',10:'data',11:'text'});
     baseRowsVista=rows;
@@ -859,8 +862,8 @@ function drawBase(){
       `<br>Clica un material per veure totes les compres (data, obra, proveïdor i preu unitari). El <b>preu mitjà</b> és ponderat per quantitat. La marca ±% avisa que el preu ha ballat molt entre la compra més barata i la més cara.`;
   }else{
     tbl.style.minWidth='1080px';
-    let rows=base.l.filter(filtraObra).filter(l=>!q || coincideix(pc,l[0],l[10],l[6],l[4]) ||
-      (qd&&(normNum(l[2]).includes(qd)||normNum(l[3]).includes(qd))));
+    let rows=base.l.filter(filtraObra).filter(l=>!q ||
+      coincideix(pc, l[0], l[10], l[6], l[4], l[2], l[3], l[1], normNum(l[2]), normNum(l[3])));
     rows=ordenaFiles(rows, baseSort.l, {0:'text',1:'data',2:'text',3:'text',4:'text',5:'num',6:'text',7:'num',8:'num',9:'num',10:'text'});
     baseRowsVista=rows;
     tbl.innerHTML=
