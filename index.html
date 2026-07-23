@@ -732,6 +732,61 @@ function normMat(s){
   return String(s||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'')
     .toUpperCase().replace(/[^A-Z0-9 ]/g,' ').replace(/\s+/g,' ').trim();
 }
+/* Totes les obres conegudes: les de la llista, les de la base i les que
+   ja fan servir documents entrats. */
+function totesLesObres(){
+  const s=new Set(OBRES);
+  if(base){ base.f.forEach(f=>{ if(f[0]) s.add(String(f[0]).trim()); });
+            base.l.forEach(l=>{ if(l[0]) s.add(String(l[0]).trim()); }); }
+  state.docs.forEach(d=>{ if(d.obra) s.add(String(d.obra).trim()); });
+  return [...s].filter(Boolean).sort((a,b)=>a.localeCompare(b,'ca'));
+}
+/* Comprova l'obra escrita a mà. Si no existeix exactament, pregunta:
+   una obra mal escrita («BALCA 4» quan toca «BALCA4») o inventada sense
+   voler faria anar els costos a l'obra equivocada. Torna el nom definitiu
+   o null si es cancel·la. */
+async function confirmaObra(text){
+  const t=String(text||'').trim();
+  if(!t) return '';
+  const obres=totesLesObres();
+  // compacta: sense espais ni signes, per fer coincidir «BALCA 4» amb «BALCA4»
+  const compact = s => normMat(s).replace(/ /g,'');
+  const k=compact(t);
+  // 1) coincidència exacta ignorant espais, accents i signes
+  const exacte=obres.find(o=>compact(o)===k);
+  if(exacte){
+    if(exacte!==t) toast('Obra assignada: '+exacte);
+    return exacte;
+  }
+  // 2) semblants, per proposar-les abans de crear-ne una de nova
+  // semblants: per contingut o per faltes de tecleig (1-2 lletres canviades)
+  const dist=(a,b)=>{
+    const m=a.length, n=b.length;
+    if(Math.abs(m-n)>3) return 99;
+    let prev=Array.from({length:n+1},(_,j)=>j);
+    for(let i=1;i<=m;i++){
+      const cur=[i];
+      for(let j=1;j<=n;j++)
+        cur[j]=Math.min(prev[j]+1, cur[j-1]+1, prev[j-1]+(a[i-1]===b[j-1]?0:1));
+      prev=cur;
+    }
+    return prev[n];
+  };
+  const marge = k.length>=8 ? 2 : (k.length>=5 ? 2 : 1);
+  const sem=obres.map(o=>({o, n:compact(o)}))
+                 .map(x=>({...x, d: (x.n.includes(k)||k.includes(x.n)) ? 0 : dist(x.n,k)}))
+                 .filter(x=>x.d<=marge)
+                 .sort((a,b)=>a.d-b.d || Math.abs(a.n.length-k.length)-Math.abs(b.n.length-k.length))
+                 .slice(0,8).map(x=>x.o);
+  const opcions=[...sem, '➕ Crear obra NOVA «'+t+'»'];
+  const tria=await triaModal(
+    'L\'obra «'+t+'» no existeix.'+
+    (sem.length? '\n\nVols dir alguna d\'aquestes?' : '\n\nNo s\'assembla a cap obra oberta.'),
+    opcions);
+  if(!tria) return null;                       // cancel·lat: no toquem res
+  if(tria.startsWith('➕')) return t;           // crear-la de nou, expressament
+  return tria;
+}
 function agrupaMaterials(linies){
   const map=new Map();
   for(const l of linies){
@@ -1718,7 +1773,15 @@ function lligaDetall(d){
   }
   inp.oninput=()=>omple(inp.value);
   inp.onfocus=()=>omple(inp.value);
-  inp.onblur=()=>{ setTimeout(()=>list.classList.remove('open'),150); d.obra=inp.value.trim(); persist(); renderSoft(); };
+  inp.onblur=async ()=>{
+    setTimeout(()=>list.classList.remove('open'),150);
+    const escrit=inp.value.trim(), abans=d.obra||'';
+    if(normMat(escrit)===normMat(abans)){ d.obra=escrit||abans; persist(); renderSoft(); return; }
+    const ok=await confirmaObra(escrit);
+    if(ok===null){ inp.value=abans; return; }   // cancel·lat: deixem com estava
+    d.obra=ok; d.obraAuto=false; persist(); render();
+    sincronitzaBase(d);                         // si estava validat, refresca la base
+  };
 
   // línies
   det.querySelectorAll('#tbody tr').forEach(tr=>{
