@@ -148,6 +148,9 @@ table.linies .del:hover{color:var(--err)}
 .match-item .why{color:var(--ink-soft);font-size:11px}
 .match-item .mono{font-family:var(--mono);font-weight:700}
 .match-item .grow{flex:1}
+.cost-tag{display:inline-flex;align-items:center;gap:4px;font-size:10.5px;font-weight:800;letter-spacing:.02em;
+  padding:1px 7px;border-radius:99px;background:var(--ok-soft);color:var(--ok);white-space:nowrap}
+.cost-tag.pend{background:var(--slate-soft);color:var(--ink-soft)}
 .casat-pill{display:inline-flex;align-items:center;gap:6px;background:var(--ok-soft);color:var(--ok);
   font-weight:700;border-radius:99px;padding:3px 11px;font-size:12px}
 
@@ -1608,9 +1611,12 @@ function render(){
           <button class="card-del" data-del="${d.id}" title="Elimina aquest document" aria-label="Elimina">×</button>
         </div>
         <div class="row2">
-          <span class="dot ${casat?'ok':'pend'}" title="${casat?'Casat':'Pendent de casar'}">●</span>
+          <span class="dot ${casat?'ok':'pend'}" title="${casat?'Casat amb la factura':'Pendent de casar amb la factura'}">●</span>
           <span class="prov">${esc(d.proveidor)||'<i>proveïdor?</i>'}</span>
           <span class="obra-chip ${d.obra?'':'missing'}">${esc(d.obra)||'sense obra'}</span>
+          ${(d.estat==='validat'&&d.obra)
+            ? '<span class="cost-tag" title="Aquest document ja consta a la base de costos">● a costos</span>'
+            : '<span class="cost-tag pend" title="Encara NO ha passat a costos: cal obra assignada i validar">○ pendent</span>'}
         </div>
       </div>`;
     }).join('');
@@ -1649,7 +1655,10 @@ function renderDetail(){
       ${d.llegint?`<span class="spin"></span> <span class="small-note">${esc(d.progres||'llegint el document…')}</span>`:''}
     </h2>
     <div class="spacer" style="flex:1"></div>
-    ${d.estat==='validat'?'<span class="casat-pill">● Validat</span>':''}
+    ${d.estat==='validat'
+        ? (d.obra ? '<span class="casat-pill">● Validat i passat a costos</span>'
+                  : '<span class="casat-pill" style="background:var(--warn-soft);color:var(--warn)">● Validat · falta obra per passar-lo a costos</span>')
+        : '<span class="cost-tag pend">○ Pendent de validar</span>'}
   </div>
 
   <div class="panel-body">
