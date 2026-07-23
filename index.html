@@ -746,7 +746,9 @@ function fiabilitatFactura(f, linies){
   else if(dataOk===false){ motius.push('data allunyada'); nivell='dubte'; }
   if(sumaOk===true) motius.push('import quadra');
   else if(sumaOk===false){ motius.push('import no quadra ('+fmt(Math.abs(suma-impF))+' € de diferència)'); nivell='malament'; }
-  if(!numOk && nivell==='ok') nivell='dubte';
+  // Si la data i l'import quadren, la coincidència és bona encara que el
+  // número només encaixi pel final (és el cas de SUPPLAID: 946 = 604500946).
+  if(!numOk && nivell==='ok' && !(dataOk===true && sumaOk===true)) nivell='dubte';
   return {nivell, motius, suma, impF};
 }
 
