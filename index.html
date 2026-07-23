@@ -259,6 +259,7 @@ table.linies .del:hover{color:var(--err)}
       <span style="flex:1"></span>
       <label class="btn small">⇪ Actualitza des dels teus fitxers
         <input type="file" id="baseUpload" accept=".xlsx,.xlsm,.ods" multiple hidden></label>
+      <button class="btn small" id="baseUndo" title="Torna la base tal com estava abans de l'última actualització">↩ Desfés l'última actualització</button>
       <button class="btn small" id="baseRestore">Restaura l'original</button>
       <button class="btn small" id="baseClose">Tanca</button>
     </div>
@@ -387,6 +388,23 @@ async function loadBase(){
   }catch(e){ /* no hi ha base desada: fem servir la incrustada */ }
   base=BASE_EMBEDDED;
 }
+/* Desa una còpia de seguretat de la base ACTUAL abans de tocar-la, per poder
+   desfer una importació equivocada (p. ex. una Relació antiga o incompleta). */
+async function backupBase(){
+  try{
+    if(base) await Store.set('enerfust_base_backup_v1', JSON.stringify({quan:Date.now(), base}));
+  }catch(e){ console.debug('backup base', e); }
+}
+async function desfesBase(){
+  let b=null;
+  try{ const r=await Store.get('enerfust_base_backup_v1'); if(r&&r.value) b=JSON.parse(r.value); }catch(e){}
+  if(!b || !b.base){ toast('No hi ha cap còpia anterior desada'); return; }
+  const quan=new Date(b.quan).toLocaleString('ca-ES');
+  if(!await confirmaModal('Tornar la base al punt abans de l\'última actualització?\n\nCòpia del '+quan+
+     '\n· '+(b.base.f||[]).length+' factures\n· '+(b.base.l||[]).length+' línies de detall')) return;
+  base=b.base; await saveBase(); drawBase(); render();
+  toast('Base restaurada al punt anterior ✓');
+}
 async function saveBase(){
   try{ await Store.set('enerfust_base_v1', JSON.stringify(base)); }
   catch(e){ console.warn(e); avisaSenseDesat(); }
@@ -459,6 +477,7 @@ document.getElementById('baseQ').oninput=()=>drawBase();
 document.getElementById('vistaF').onclick=()=>{ baseVista='f'; drawBase(); };
 document.getElementById('vistaL').onclick=()=>{ baseVista='l'; drawBase(); };
 document.getElementById('baseUpload').addEventListener('change', async e=>{ await actualitzaBase([...e.target.files]); e.target.value=''; });
+document.getElementById('baseUndo').onclick=()=>desfesBase();
 document.getElementById('baseRestore').onclick=async ()=>{
   if(!await confirmaModal('Tornar a la base original (la dels fitxers pujats a Claude el 22/07/2026)?')) return;
   base=JSON.parse(JSON.stringify(BASE_EMBEDDED));
@@ -572,6 +591,7 @@ function filaSaltable(nA,prov){
 }
 async function actualitzaBase(files){
   if(!base) return;
+  await backupBase();          // punt de retorn abans de tocar res
   let nF=0,nL=0;
   for(const file of files){
     try{
@@ -603,7 +623,21 @@ async function actualitzaBase(files){
                       String(mark||'').trim()?1:0,isoJS(venc),String(pag||'').trim()]);
           }
         }
-        if(nou.length){ base.f=nou; nF=nou.length; }
+        if(nou.length){
+          const actuals=(base.f||[]).length;
+          // Una Relació substitueix TOTES les factures. Si la nova en porta
+          // menys que les que ja hi ha, pot ser una versió antiga o parcial.
+          if(actuals && nou.length < actuals*0.9){
+            const ok=await confirmaModal(
+              'ATENCIÓ: «'+file.name+'» substituirà TOTES les factures de la base.\n\n'+
+              '· Ara a la base: '+actuals+' factures\n'+
+              '· Al fitxer nou: '+nou.length+' factures\n\n'+
+              'El fitxer en porta '+(actuals-nou.length)+' menys. Si és una versió antiga o incompleta, '+
+              'perdries aquestes factures del control de duplicats.\n\nVols continuar igualment?');
+            if(!ok){ toast(file.name+': importació cancel·lada'); continue; }
+          }
+          base.f=nou; nF=nou.length;
+        }
         else toast(file.name+': no s\'hi han trobat factures');
       }else{
         /* Fitxer de línies "Factures [obra]" */
@@ -620,7 +654,18 @@ async function actualitzaBase(files){
         const totesObres=[...new Set([...base.f.map(f=>f[0]),...OBRES])];
         let cands=totesObres.filter(o=>normProv(o)===normProv(guess));
         if(!cands.length) cands=totesObres.filter(o=>normProv(o).includes(normProv(guess))||normProv(guess).includes(normProv(o)));
-        const obra=(cands.length===1?cands[0]:(cands[0]||guess||'')).trim().toUpperCase();
+        let obra;
+        if(cands.length===1){
+          obra=cands[0];
+        }else{
+          // Ambigu: cal preguntar-ho. Sobreescriure l'obra equivocada
+          // esborraria el detall d'una altra obra sense avisar.
+          const opcions=[...new Set([...cands, guess, ...totesObres].filter(Boolean))].slice(0,40);
+          obra=await triaModal('A quina OBRA corresponen les línies de «'+file.name+'»?\n'+
+                               '(Les línies actuals d\'aquesta obra se substituiran per les del fitxer.)', opcions);
+          if(!obra){ toast(file.name+': importació cancel·lada'); continue; }
+        }
+        obra=String(obra).trim().toUpperCase();
         if(!obra){ toast(file.name+': importació cancel·lada'); continue; }
         const noves=[];
         for(const r of rows.slice(1)){
@@ -630,6 +675,15 @@ async function actualitzaBase(files){
           noves.push([obra,isoJS(r[iData]),String(r[iFac]||'').trim(),alb,String(r[iCodi]||'').slice(0,20),
                       q,String(r[iCon]||'').slice(0,60),p,iD>=0?num(r[iD]):0,imp,String(r[iProv]||'').slice(0,30)]);
         }
+        const actualsL=(base.l||[]).filter(l=>l[0]===obra).length;
+        if(actualsL && noves.length < actualsL*0.9){
+          const ok=await confirmaModal(
+            'ATENCIÓ: «'+file.name+'» substituirà el detall de l\'obra '+obra+'.\n\n'+
+            '· Ara a la base: '+actualsL+' línies\n'+
+            '· Al fitxer nou: '+noves.length+' línies\n\n'+
+            'Vols continuar igualment?');
+          if(!ok){ toast(file.name+': importació cancel·lada'); continue; }
+        }
         base.l=base.l.filter(l=>l[0]!==obra).concat(noves);
         nL+=noves.length;
       }
@@ -637,7 +691,7 @@ async function actualitzaBase(files){
   }
   base.src="Actualitzada per l'Alba"; base.updated=Date.now();
   await saveBase(); drawBase(); render();
-  toast('Base actualitzada'+(nF?` · ${nF} factures`:'')+(nL?` · ${nL} línies noves`:''));
+  toast('Base actualitzada'+(nF?` · ${nF} factures`:'')+(nL?` · ${nL} línies`:'')+' · pots desfer-ho des de «Base de costos»');
 }
 
 let state = { docs: [], nextId: 1 };
@@ -701,6 +755,36 @@ function dialogModal({msg, ok='D\'acord', cancel='Cancel·la'}){
 }
 function confirmaModal(msg){ return dialogModal({msg}); }
 function avisModal(msg){ return dialogModal({msg, ok:'D\'acord', cancel:null}); }
+/* Tria entre diverses opcions (p. ex. a quina obra correspon un fitxer).
+   Torna l'opció triada o null si es cancel·la. */
+function triaModal(msg, opcions){
+  return new Promise(res=>{
+    const ov=document.createElement('div');
+    ov.style.cssText='position:fixed;inset:0;background:rgba(20,28,36,.45);display:flex;align-items:center;justify-content:center;z-index:99999;padding:20px';
+    const box=document.createElement('div');
+    box.style.cssText='background:#fff;border-radius:12px;max-width:460px;width:100%;padding:20px;box-shadow:0 12px 44px rgba(0,0,0,.28);color:#1b2530;max-height:80vh;overflow:auto';
+    const p=document.createElement('div');
+    p.style.cssText='font-size:15px;line-height:1.45;margin-bottom:14px;white-space:pre-wrap;font-weight:600';
+    p.textContent=msg;
+    const list=document.createElement('div');
+    list.style.cssText='display:flex;flex-direction:column;gap:7px;margin-bottom:14px';
+    opcions.forEach(o=>{
+      const b=document.createElement('button');
+      b.textContent=o;
+      b.style.cssText='padding:10px 13px;border:1px solid #ccd3da;background:#fff;border-radius:8px;cursor:pointer;font:inherit;text-align:left';
+      b.onmouseover=()=>b.style.background='#f2f5f8'; b.onmouseout=()=>b.style.background='#fff';
+      b.onclick=()=>close(o);
+      list.appendChild(b);
+    });
+    const canc=document.createElement('button');
+    canc.textContent='Cancel·la (no importis aquest fitxer)';
+    canc.style.cssText='padding:9px 16px;border:none;background:transparent;color:#6b7885;cursor:pointer;font:inherit;text-decoration:underline';
+    canc.onclick=()=>close(null);
+    function close(v){ ov.remove(); res(v); }
+    ov.onclick=e=>{ if(e.target===ov) close(null); };
+    box.append(p,list,canc); ov.append(box); document.body.appendChild(ov);
+  });
+}
 function esc(s){ return String(s??'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function num(v){
   if(v===null||v===undefined||v==='') return 0;
