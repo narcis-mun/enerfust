@@ -265,7 +265,7 @@ table.linies .del:hover{color:var(--err)}
   <div class="modal">
     <div class="modal-h">
       <h2>📚 Base de costos</h2>
-      <span class="src" style="font-family:var(--mono);font-size:10px;opacity:.75" title="Versió de l'aplicació desplegada">v2026.07.23-10</span>
+      <span class="src" style="font-family:var(--mono);font-size:10px;opacity:.75" title="Versió de l'aplicació desplegada">v2026.07.23-11</span>
       <span class="src" id="baseStats"></span>
       <span style="flex:1"></span>
       <label class="btn small">⇪ Actualitza des dels teus fitxers
@@ -276,7 +276,7 @@ table.linies .del:hover{color:var(--err)}
     </div>
     <div class="modal-b">
       <div style="display:flex;gap:10px;align-items:center;margin-bottom:8px;flex-wrap:wrap">
-        <span class="seg"><button id="vistaF" class="on">Factures</button><button id="vistaL">Línies de detall</button><button id="vistaP">💶 Preus per material</button><button id="vistaR">📊 Rendibilitat</button></span>
+        <span class="seg"><button id="vistaF" class="on">Factures</button><button id="vistaL">Línies de detall</button><button id="vistaP">💶 Preus per material</button><button id="vistaC">🧾 Factures a client</button><button id="vistaR">📊 Rendibilitat</button></span>
         <select id="baseObra" title="Filtra per obra" style="border:1px solid var(--line);border-radius:7px;padding:7px 9px;max-width:230px"></select>
         <input id="baseQ" placeholder="Cerca: proveïdor, nº factura, material… (p. ex. «saltoki 2026» o «tub coure 16»)" style="flex:1;min-width:200px;border:1px solid var(--line);border-radius:7px;padding:7px 10px">
         <button class="btn small" id="baseExport" title="Baixa en Excel exactament el que estàs veient">⬇ Exporta la vista</button>
@@ -571,6 +571,14 @@ async function esborraFilaBase(clau){
   await saveBase(); drawBase(); render();
   toast('Eliminada de la base · pots desfer-ho amb «↩ Desfés l\'última actualització»');
 }
+/* Número de factura emesa al client. Al full hi ha també etiquetes de
+   total («COBRAT A SIFERA», «COBRAT DE SIFERA») que no són factures. */
+function cliNum(v){
+  const s=String(v||'').trim();
+  if(!s || s.toLowerCase()==='nan') return '';
+  if(/COBRAT|TOTAL|PENDENT/i.test(s)) return '';
+  return s;
+}
 function clauBaseF(f){ return [f[0],f[3],f[6]||f[2],f[7]||f[1]].join('|'); }
 
 /* Busca a la base factures que probablement siguin AQUEST document, encara
@@ -690,6 +698,7 @@ document.getElementById('vistaF').onclick=()=>{ baseVista='f'; baseExpandit=null
 document.getElementById('vistaL').onclick=()=>{ baseVista='l'; baseExpandit=null; drawBase(); };
 document.getElementById('vistaP').onclick=()=>{ baseVista='p'; baseExpandit=null; drawBase(); };
 document.getElementById('vistaR').onclick=()=>{ baseVista='r'; baseExpandit=null; drawBase(); };
+document.getElementById('vistaC').onclick=()=>{ baseVista='c'; baseExpandit=null; drawBase(); };
 document.getElementById('baseUpload').addEventListener('change', async e=>{ await actualitzaBase([...e.target.files]); e.target.value=''; });
 document.getElementById('baseUndo').onclick=()=>desfesBase();
 document.getElementById('baseObra').onchange=e=>{ baseObraSel=e.target.value; baseExpandit=null; drawBase(); };
@@ -780,7 +789,7 @@ let baseVista='f';
 let baseExpandit=null;
 let baseObraSel='';                 // '' = totes les obres
 let baseRowsVista=[];               // files que es veuen ara (per exportar)
-let baseSort={f:null, l:null, p:null, r:null};      // {idx, dir} per vista
+let baseSort={f:null, l:null, p:null, r:null, c:null};      // {idx, dir} per vista
 const BASE_MAX=1000;                // files que es dibuixen com a màxim
 
 /* Ordena una llista de files per una columna. `tipus` diu com comparar. */
@@ -1014,6 +1023,76 @@ function filesMaterial(ms){
    què hem facturat al client (columnes «FACTURA A SIFERA» i «BASE SIFERA»
    del vostre Excel). Les files amb import de client però sense número de
    factura són totals del full i no es compten. */
+/* Cost assignat a una factura emesa al client */
+/* Selector per assignar aquesta factura de proveïdor a una factura
+   emesa al client (el que l'Alba feia a mà a la columna «FACTURA A SIFERA»). */
+function selectorClient(f, clau){
+  const actual=String(f[13]||'');
+  const cli=((base&&base.c)?base.c:[]).filter(c=>c[0]===f[0])
+            .sort((a,b)=>String(a[1]).localeCompare(String(b[1]),'ca',{numeric:true}));
+  const opts=[`<option value="">— sense assignar —</option>`]
+    .concat(cli.map(c=>`<option value="${esc(c[1])}"${c[1]===actual?' selected':''}>${esc(c[1])} · ${fmt(num(c[2]))} €</option>`))
+    .concat(actual && !cli.some(c=>c[1]===actual) ? [`<option value="${esc(actual)}" selected>${esc(actual)}</option>`] : [])
+    .concat([`<option value="__nova__">➕ Crear factura al client nova…</option>`]).join('');
+  return `<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap">`+
+    `<span class="small-note"><b>Facturat al client dins de:</b></span>`+
+    `<select class="cli-sel" data-clau="${esc(clau)}" style="border:1px solid var(--line);border-radius:7px;padding:5px 8px;font-size:12px">${opts}</select>`+
+    (actual?'':`<span class="small-note" style="color:var(--warn)">⚠ aquest cost encara no s'ha facturat a ningú</span>`)+
+    `</div>`;
+}
+async function assignaClient(clau, valor){
+  const f=base.f.find(x=>clauBaseF(x)===clau);
+  if(!f) return;
+  if(valor==='__nova__'){
+    const numero=await demanaText('Número de la factura emesa al client (p. ex. N/F-512):');
+    if(!numero) { drawBase(); return; }
+    const imp=await demanaText('Base imposable facturada al client (€):');
+    base.c=base.c||[];
+    if(!base.c.some(c=>c[0]===f[0]&&c[1]===numero))
+      base.c.push([f[0], numero, +num(imp).toFixed(2), f[7]||f[1]||'', 'app']);
+    f[13]=numero;
+  }else{
+    f[13]=valor;
+  }
+  base.updated=Date.now();
+  await saveBase(); drawBase();
+  toast(f[13]?('Assignada a '+f[13]):'Assignació treta');
+}
+/* Petit quadre per demanar un text (els prompt() del navegador no van aquí) */
+function demanaText(msg, valor){
+  return new Promise(res=>{
+    const ov=document.createElement('div');
+    ov.style.cssText='position:fixed;inset:0;background:rgba(20,28,36,.45);display:flex;align-items:center;justify-content:center;z-index:99999;padding:20px';
+    const box=document.createElement('div');
+    box.style.cssText='background:#fff;border-radius:12px;max-width:420px;width:100%;padding:20px;box-shadow:0 12px 44px rgba(0,0,0,.28);color:#1b2530';
+    const p=document.createElement('div'); p.style.cssText='font-size:14.5px;margin-bottom:12px;font-weight:600'; p.textContent=msg;
+    const inp=document.createElement('input');
+    inp.value=valor||''; inp.style.cssText='width:100%;padding:9px 11px;border:1px solid #ccd3da;border-radius:8px;font:inherit;margin-bottom:14px';
+    const row=document.createElement('div'); row.style.cssText='display:flex;gap:10px;justify-content:flex-end';
+    const bc=document.createElement('button'); bc.textContent='Cancel·la';
+    bc.style.cssText='padding:9px 16px;border:1px solid #ccd3da;background:#fff;border-radius:8px;cursor:pointer;font:inherit';
+    const bo=document.createElement('button'); bo.textContent="D'acord";
+    bo.style.cssText='padding:9px 16px;border:none;background:#e8763a;color:#fff;border-radius:8px;cursor:pointer;font:inherit;font-weight:700';
+    function close(v){ ov.remove(); res(v); }
+    bc.onclick=()=>close(null); bo.onclick=()=>close(inp.value.trim());
+    inp.onkeydown=e=>{ if(e.key==='Enter') close(inp.value.trim()); if(e.key==='Escape') close(null); };
+    row.append(bc,bo); box.append(p,inp,row); ov.append(box); document.body.appendChild(ov); inp.focus();
+  });
+}
+function costDeFacturaClient(obra, numCli){
+  return (base?base.f:[]).filter(f=>f[0]===obra && String(f[13]||'')===numCli)
+                         .reduce((a,f)=>a+(num(f[8])||num(f[5])),0);
+}
+/* Files de la vista «Factures a client» */
+function filesClient(){
+  const c=(base&&base.c)?base.c:[];
+  return c.map(x=>{
+    const cost=costDeFacturaClient(x[0],x[1]);
+    const b=num(x[2]);
+    return [x[0], x[1], x[3]||'', b, +cost.toFixed(2), +(b-cost).toFixed(2),
+            b>0?+((b-cost)/b*100).toFixed(1):''];
+  });
+}
 function rendibilitatObres(){
   const m={};
   const get=o=>(m[o]=m[o]||{obra:o,cost:0,nFac:0,facturat:0,nFacCli:0,costSenseFacturar:0,facsCli:new Set()});
@@ -1022,12 +1101,16 @@ function rendibilitatObres(){
     const imp=num(f[8])||num(f[5]);
     if(imp){ x.cost+=imp; x.nFac++; }
     const fcli=String(f[13]||'').trim();
-    if(fcli){ x.facsCli.add(fcli); if(num(f[14])){ x.facturat+=num(f[14]); x.nFacCli++; } }
+    if(fcli) x.facsCli.add(fcli);
     else if(imp) x.costSenseFacturar+=imp;
+  });
+  ((base&&base.c)?base.c:[]).forEach(c=>{
+    const x=get(c[0]||'(sense obra)');
+    x.facturat+=num(c[2]); x.nFacCli++; x.facsCli.add(c[1]);
   });
   return Object.values(m).map(x=>{
     const marge=x.facturat-x.cost;
-    return [x.obra, x.nFac, +x.cost.toFixed(2), x.facsCli.size, +x.facturat.toFixed(2),
+    return [x.obra, x.nFac, +x.cost.toFixed(2), x.nFacCli, +x.facturat.toFixed(2),
             +marge.toFixed(2), x.facturat>0?+(marge/x.facturat*100).toFixed(1):'',
             +x.costSenseFacturar.toFixed(2)];
   });
@@ -1059,6 +1142,7 @@ function drawBase(){
   const bF=document.getElementById('vistaF'), bL=document.getElementById('vistaL'),
         bP=document.getElementById('vistaP'), bR=document.getElementById('vistaR');
   if(bR) bR.classList.toggle('on', baseVista==='r');
+  const bC=document.getElementById('vistaC'); if(bC) bC.classList.toggle('on', baseVista==='c');
   bF.classList.toggle('on', baseVista==='f'); bL.classList.toggle('on', baseVista==='l');
   if(bP) bP.classList.toggle('on', baseVista==='p');
   bF.textContent=`Factures (${base.f.length})`; bL.textContent=`Línies de detall (${base.l.length})`;
@@ -1100,7 +1184,7 @@ function drawBase(){
                  ? `<span class="badge-warn">◐ coincidència probable — revisa-la</span>`
                  : `<span class="badge-err">✗ no quadra</span>`);
             const quadra = ` ${pastilla} <span class="small-note">${esc(fi.motius.join(' · '))}</span>`;
-            html+=`<tr class="expandrow"><td colspan="9"><table class="subtbl">`+
+            html+=`<tr class="expandrow"><td colspan="9">${selectorClient(f,clau)}<table class="subtbl">`+
               `<thead><tr><th>Data</th><th>Nº Albarà</th><th>Codi</th><th>Concepte</th><th style="text-align:right">Quant.</th><th style="text-align:right">Preu</th><th style="text-align:right">% dte</th><th style="text-align:right">Import</th></tr></thead><tbody>`+
               ls.map(l=>`<tr><td>${esc(l[1])}</td><td class="mono">${esc(l[3])}</td><td class="mono">${esc(l[4])}</td><td title="${esc(l[6])}">${esc(l[6])}</td><td class="imp">${l[5]||''}</td><td class="imp">${l[7]?fmt(l[7]):''}</td><td class="imp">${l[8]||''}</td><td class="imp">${fmt(l[9])}</td></tr>`).join('')+
               `</tbody></table><div class="small-note" style="margin-top:6px">${ls.length} línies — suma ${fmt(suma)} €${quadra}</div></td></tr>`;
@@ -1108,7 +1192,7 @@ function drawBase(){
             const sense = obresL.has(f[0])
               ? `Aquesta factura no té línia a línia a la base (no surt al fitxer «Factures ${esc(f[0])}» carregat).`
               : `L'obra ${esc(f[0])} no té cap fitxer «Factures [obra]» carregat: només hi ha el nivell de factura. Puja el seu .ods des d'«Actualitza» per veure'n el desglossament.`;
-            html+=`<tr class="expandrow"><td colspan="9"><span class="small-note">${sense}</span></td></tr>`;
+            html+=`<tr class="expandrow"><td colspan="9">${selectorClient(f,clau)}<span class="small-note">${sense}</span></td></tr>`;
           }
         }
         return html;
@@ -1118,6 +1202,10 @@ function drawBase(){
       if(tr.classList.contains('sensedet')) return;   // sense detall: no desplega
       tr.onclick=()=>{ baseExpandit=(baseExpandit===tr.dataset.clau)?null:tr.dataset.clau; drawBase(); };
     });
+    tbl.querySelectorAll('.cli-sel').forEach(s=>{
+      s.onclick=e=>e.stopPropagation();
+      s.onchange=e=>{ e.stopPropagation(); assignaClient(s.dataset.clau, s.value); };
+    });
     tbl.querySelectorAll('.base-del').forEach(b=>b.onclick=async e=>{
       e.stopPropagation();
       await esborraFilaBase(b.dataset.delf);
@@ -1126,6 +1214,31 @@ function drawBase(){
     const suma=rows.reduce((a,f)=>a+num(f[8]||f[5]),0);
     foot.innerHTML=`${rows.length} factures — total ${fmt(suma)} €`+(rows.length>BASE_MAX?` (se'n mostren les primeres ${BASE_MAX})`:'')+
       `<br>Clica una factura per veure'n el desglossament. Només tenen detall les <b>${obresL.size} obres</b> amb fitxer «Factures [obra]» carregat (marcades amb ▸ al desplegable); a la resta, la Relació només porta el total.`;
+  }else if(baseVista==='c'){
+    tbl.style.minWidth='860px';
+    let rows=filesClient().filter(r=>!baseObraSel||r[0]===baseObraSel)
+                          .filter(r=>!q||coincideix(pc,r[0],r[1]));
+    rows=ordenaFiles(rows, baseSort.c||{idx:3,dir:-1},
+                     {0:'text',1:'text',2:'data',3:'num',4:'num',5:'num',6:'num'});
+    baseRowsVista=rows;
+    tbl.innerHTML=
+      `<thead><tr>${th('Obra',0,'c')}${th('Factura al client',1,'c')}${th('Data',2,'c')}`+
+      `${th('BASE FACTURADA',3,'c','right')}${th('Cost assignat',4,'c','right')}`+
+      `${th('MARGE',5,'c','right')}${th('%',6,'c','right')}</tr></thead><tbody>`+
+      rows.slice(0,BASE_MAX).map(r=>{
+        const col=r[5]>=0?'var(--ok)':'var(--err)';
+        return `<tr><td>${esc(r[0])}</td><td class="mono"><b>${esc(r[1])}</b></td><td>${esc(r[2])}</td>`+
+          `<td class="imp">${fmt(r[3])}</td><td class="imp">${r[4]?fmt(r[4]):'<span class="small-note">— sense costos assignats</span>'}</td>`+
+          `<td class="imp" style="color:${col};font-weight:700">${fmt(r[5])}</td>`+
+          `<td class="imp" style="color:${col}">${r[6]===''?'':r[6]+'%'}</td></tr>`;
+      }).join('')+`</tbody>`;
+    connectaOrdenacio();
+    const tb=rows.reduce((a,r)=>a+num(r[3]),0), tc2=rows.reduce((a,r)=>a+num(r[4]),0);
+    const sensecost=rows.filter(r=>!r[4]).length;
+    foot.innerHTML=`${rows.length} factures emeses al client — facturat ${fmt(tb)} € · cost assignat ${fmt(tc2)} € · `+
+      `<b style="color:${tb-tc2>=0?'var(--ok)':'var(--err)'}">marge ${fmt(tb-tc2)} €</b>`+
+      (sensecost?`<br><b>${sensecost}</b> no tenen cap cost assignat: obre'ls des de la pestanya «Factures» i assigna-hi les factures de proveïdor.`:'')+
+      `<br><span class="small-note">Surten de la columna «FACTURA A SIFERA» del vostre Excel. També se'n poden crear de noves des de la pestanya «Factures».</span>`;
   }else if(baseVista==='r'){
     tbl.style.minWidth='900px';
     let rows=rendibilitatObres().filter(r=>!baseObraSel||r[0]===baseObraSel)
@@ -1230,7 +1343,7 @@ function filaSaltable(nA,prov){
 async function actualitzaBase(files){
   if(!base) return;
   await backupBase();          // punt de retorn abans de tocar res
-  let nF=0,nL=0;
+  let nF=0,nL=0,nC=0;
   for(const file of files){
     try{
       const buf=await file.arrayBuffer();
@@ -1241,7 +1354,7 @@ async function actualitzaBase(files){
       };
       if(wbk.SheetNames.filter(teProveidor).length>=3){
         /* Relació de costos: substitueix totes les factures */
-        const nou=[];
+        const nou=[]; const cli=[];
         for(const sn of wbk.SheetNames){
           if(sn.toUpperCase().includes('TOTAL SIFERA')) continue;
           const rows=XLSX.utils.sheet_to_json(wbk.Sheets[sn],{header:1,defval:'',raw:true});
@@ -1271,13 +1384,15 @@ async function actualitzaBase(files){
             if(filaSaltable(nA,prov)) continue;
             const teDoc=String(prov||'').trim()||String(fc||'').trim();
             const albOk=String(nA||'').trim() && /\d/.test(String(nA)) && String(nA).trim().length<=20;
+            const nCli=cliNum(fcli);
+            if(nCli && num(bcli)>0 && !cli.some(c=>c[0]===sn && c[1]===nCli))
+              cli.push([sn, nCli, +num(bcli).toFixed(2), isoJS(dF)||isoJS(dA)]);
             if(!teDoc&&!albOk) continue;
             nou.push([sn,isoJS(dA),String(nA||'').trim(),String(prov||'').trim(),String(nat||'').trim(),
                       num(iA),String(fc||'').trim(),isoJS(dF),num(iF),
                       String(mark||'').trim()?1:0,isoJS(venc),String(pag||'').trim(),
                       '',                                   // 12: origen (app)
-                      String(fcli||'').trim(),              // 13: factura al client
-                      num(bcli)]);                          // 14: base facturada al client
+                      cliNum(fcli)]);                       // 13: factura al client assignada
           }
         }
         if(nou.length){
@@ -1300,6 +1415,10 @@ async function actualitzaBase(files){
           const app=base.f.filter(f=>f[ORIG_F] &&
             !jaHi.has([normProv(f[3]),normNum(f[6]||f[2]),normProv(f[0])].join('|')));
           base.f=nou.concat(app); nF=nou.length;
+          // factures emeses al client (les que l'Alba anota a «FACTURA A SIFERA»)
+          const cliApp=(base.c||[]).filter(c=>c[4]==='app');
+          base.c=cli.concat(cliApp.filter(a=>!cli.some(c=>c[0]===a[0]&&c[1]===a[1])));
+          nC=base.c.length;
           if(app.length) toast(app.length+' document(s) entrats a l\'eina s\'han conservat');
         }
         else toast(file.name+': no s\'hi han trobat factures');
@@ -1357,7 +1476,7 @@ async function actualitzaBase(files){
   }
   base.src="Actualitzada per l'Alba"; base.updated=Date.now();
   await saveBase(); drawBase(); render();
-  toast('Base actualitzada'+(nF?` · ${nF} factures`:'')+(nL?` · ${nL} línies`:'')+' · pots desfer-ho des de «Base de costos»');
+  toast('Base actualitzada'+(nF?` · ${nF} factures`:'')+(nL?` · ${nL} línies`:'')+(nC?` · ${nC} factures a client`:'')+' · pots desfer-ho des de «Base de costos»');
 }
 
 let state = { docs: [], nextId: 1 };
