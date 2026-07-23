@@ -498,9 +498,23 @@ function treuDeBase(id){
 /* Incorpora un document validat a la base. Torna true si hi ha hagut canvis. */
 function posaABase(d){
   if(!base || d.estat!=='validat' || !d.obra) return false;
-  if(d.vinculatA){                    // ja existeix a la base: no la dupliquem
+  if(d.vinculatA){
+    // Ja existeix a la base: no dupliquem la factura, però SÍ que hi
+    // aportem el desglossament llegit del document, que sovint és el que
+    // falta a l'Excel. Les línies es guarden amb el número i el proveïdor
+    // de la factura que ja hi havia, perquè hi quedin lligades.
     const f=base.f.find(x=>clauBaseF(x)===d.vinculatA);
-    if(f){ treuDeBase(d.id); f[9]=1; return true; }
+    if(f){
+      treuDeBase(d.id); f[9]=1;
+      const o=origenApp(d.id);
+      for(const l of (d.linies||[])){
+        base.l.push([f[0], d.data||f[7]||'', f[6]||d.numDoc||'', l.albara||'',
+                     String(l.codi||'').slice(0,20), num(l.quantitat),
+                     String(l.concepte||'').slice(0,60), num(l.preu), num(l.dte)||0,
+                     +num(l.import).toFixed(2), f[3]||d.proveidor||'', o]);
+      }
+      return true;
+    }
     d.vinculatA=null;                 // si ha desaparegut, entra com a nova
   }
   treuDeBase(d.id);                       // evita duplicar-lo si es revalida
@@ -780,6 +794,12 @@ function numsMatchAmpli(a,b){
     for(let pad=0; pad<=4; pad++){
       if(llarg.endsWith(nu.padStart(nu.length+pad,'0'))) return true;
     }
+  }
+  /* Sèrie amb any davant: «F26_064» (=26 064) és la «64» de la Relació.
+     Acceptem el número curt si el llarg és any(2 xifres) + aquest número. */
+  if(nu.length>=2 && llarg.length>=nu.length+2){
+    const any2=llarg.slice(0,2), resta=llarg.slice(2).replace(/^0+/,'');
+    if(any2>='10' && any2<='39' && resta===nu) return true;
   }
   return false;
 }
