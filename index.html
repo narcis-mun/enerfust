@@ -221,7 +221,7 @@ table.linies .del:hover{color:var(--err)}
 </header>
 
 <div id="envWarn" style="display:none;margin:14px 18px 0;padding:11px 15px;border:1px solid #E5B4B1;background:var(--err-soft);color:#7C1D17;border-radius:10px;font-size:13.5px;font-weight:600">
-⚠ Sembla que aquesta eina s'ha obert fora de Claude (per exemple, fent doble clic al fitxer baixat). Així la lectura per IA i el desat automàtic NO funcionen. Cal obrir-la dins de claude.ai amb la sessió iniciada: puja el fitxer a un xat de Claude i demana «obre'm aquest fitxer HTML com a artefacte».
+⚠ El desat automàtic al navegador no està disponible en aquest dispositiu. L'eina funciona igual, però fes servir «Desa còpia» al final de la sessió per no perdre els documents entrats.
 </div>
 
 <div class="wrap">
@@ -787,7 +787,7 @@ async function callClaude(contentBlocks){
         : e;
       // tall puntual o xarxa caiguda: espera cada cop una mica més i reintenta
       if(intent<MAX_INTENTS-1){ await new Promise(r=>setTimeout(r, 800*Math.pow(2,intent))); continue; }
-      throw new Error("No s'ha pogut connectar amb la IA després de "+MAX_INTENTS+" intents (\"failed to fetch\"). Sol ser un tall puntual: espera uns segons i torna-ho a provar. Si el PDF és llarg, prova amb menys pàgines de cop.");
+      throw new Error("No s'ha pogut connectar amb el servidor després de "+MAX_INTENTS+" intents. Comprova la connexió a internet i torna-ho a provar.");
     }
     if(resp.ok){
       const data=await resp.json();
@@ -795,7 +795,7 @@ async function callClaude(contentBlocks){
       return (data.content||[]).filter(b=>b.type==='text').map(b=>b.text).join('\n');
     }
     // errors no-ok: alguns es poden reintentar (429, 5xx), altres no
-    if(resp.status===401||resp.status===403) throw new Error("Sessió de Claude no iniciada o caducada ("+resp.status+"): recarrega la pàgina dins de claude.ai i torna-ho a provar.");
+    if(resp.status===401||resp.status===403) throw new Error("La clau d'API no és vàlida o falta al servidor ("+resp.status+"): reviseu la variable ANTHROPIC_API_KEY a Vercel i torneu a desplegar.");
     if(resp.status===413) throw new Error("La petició és massa grossa (413): prova-ho amb una foto per pàgina.");
     if((resp.status===429 || resp.status>=500) && intent<MAX_INTENTS-1){
       await new Promise(r=>setTimeout(r, 1200*Math.pow(2,intent))); continue;
