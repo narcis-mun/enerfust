@@ -309,8 +309,20 @@ let base=null;
    llancem mai un error que pari l'app: l'estat viu en memòria
    i el desat és best-effort.
 ============================================================ */
+/* Magatzem local. En un servidor propi fem servir localStorage (fiable i
+   sense connexió). Si l'eina corre dins d'un artefacte de Claude, on
+   localStorage està bloquejat, cau cap a window.storage. */
 const Store = (function(){
-  const ok = (typeof window!=='undefined' && window.storage);
+  let mode = 'cap';
+  try{
+    if(typeof localStorage!=='undefined'){
+      const t='__enerfust_test__';
+      localStorage.setItem(t,'1'); localStorage.removeItem(t);
+      mode = 'local';
+    }
+  }catch(e){ /* bloquejat (mode privat o sandbox) */ }
+  if(mode==='cap' && typeof window!=='undefined' && window.storage) mode='claude';
+
   async function retry(fn){
     let last;
     for(let i=0;i<3;i++){
@@ -320,20 +332,30 @@ const Store = (function(){
     throw last;
   }
   return {
-    available: !!ok,
+    available: mode!=='cap',
+    mode,
     async get(key){
-      if(!ok) return null;
-      try{ return await retry(()=>window.storage.get(key, false)); }
-      catch(e){ console.debug('[Store] get', key, e); return null; }
+      if(mode==='local'){
+        const v=localStorage.getItem(key);
+        return v===null ? null : {key, value:v};
+      }
+      if(mode==='claude'){
+        try{ return await retry(()=>window.storage.get(key, false)); }
+        catch(e){ console.debug('[Store] get', key, e); return null; }
+      }
+      return null;
     },
     async set(key, value){
-      if(!ok) throw new Error('window.storage no disponible');
-      return await retry(()=>window.storage.set(key, value, false));
+      if(mode==='local'){ localStorage.setItem(key, value); return {key, value}; }
+      if(mode==='claude') return await retry(()=>window.storage.set(key, value, false));
+      throw new Error('cap magatzem disponible');
     },
     async del(key){
-      if(!ok) return;
-      try{ return await retry(()=>window.storage.delete(key, false)); }
-      catch(e){ console.debug('[Store] delete', key, e); }
+      if(mode==='local'){ localStorage.removeItem(key); return; }
+      if(mode==='claude'){
+        try{ return await retry(()=>window.storage.delete(key, false)); }
+        catch(e){ console.debug('[Store] delete', key, e); }
+      }
     }
   };
 })();
