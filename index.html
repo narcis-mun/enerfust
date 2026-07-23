@@ -272,7 +272,7 @@ table.linies .del:hover{color:var(--err)}
     </div>
     <div class="modal-b">
       <div style="display:flex;gap:10px;align-items:center;margin-bottom:8px;flex-wrap:wrap">
-        <span class="seg"><button id="vistaF" class="on">Factures</button><button id="vistaL">Línies de detall</button><button id="vistaP">💶 Preus per material</button></span>
+        <span class="seg"><button id="vistaF" class="on">Factures</button><button id="vistaL">Línies de detall</button><button id="vistaP">💶 Preus per material</button><button id="vistaR">📊 Rendibilitat</button></span>
         <select id="baseObra" title="Filtra per obra" style="border:1px solid var(--line);border-radius:7px;padding:7px 9px;max-width:230px"></select>
         <input id="baseQ" placeholder="Cerca: proveïdor, nº factura, material… (p. ex. «saltoki 2026» o «tub coure 16»)" style="flex:1;min-width:200px;border:1px solid var(--line);border-radius:7px;padding:7px 10px">
         <button class="btn small" id="baseExport" title="Baixa en Excel exactament el que estàs veient">⬇ Exporta la vista</button>
@@ -498,6 +498,11 @@ function treuDeBase(id){
 /* Incorpora un document validat a la base. Torna true si hi ha hagut canvis. */
 function posaABase(d){
   if(!base || d.estat!=='validat' || !d.obra) return false;
+  if(d.vinculatA){                    // ja existeix a la base: no la dupliquem
+    const f=base.f.find(x=>clauBaseF(x)===d.vinculatA);
+    if(f){ treuDeBase(d.id); f[9]=1; return true; }
+    d.vinculatA=null;                 // si ha desaparegut, entra com a nova
+  }
   treuDeBase(d.id);                       // evita duplicar-lo si es revalida
   const o=origenApp(d.id);
   const imp=+(sumLinies(d)||num(d.baseImp)||num(d.total)).toFixed(2);
@@ -522,6 +527,47 @@ async function sincronitzaBase(d, esborrat){
   if(esborrat || !d || d.estat!=='validat') canvi = treuDeBase(d?d.id:esborrat);
   else canvi = posaABase(d);
   if(canvi){ base.src="Actualitzada per l'Alba"; base.updated=Date.now(); await saveBase(); drawBase(); }
+}
+/* Clau estable d'una fila de la base (per vincular-hi documents) */
+function clauBaseF(f){ return [f[0],f[3],f[6]||f[2],f[7]||f[1]].join('|'); }
+
+/* Busca a la base factures que probablement siguin AQUEST document, encara
+   que el proveïdor s'escrigui diferent («C2I» vs «Control i Integració…»)
+   o el número porti prefix («98» vs «F26_098»). Puntuem coincidències:
+   l'import i la data pesen molt, perquè són el que no falla. */
+function possiblesDuplicats(d){
+  if(!base || d.kind!=='factura') return [];
+  const imp=+(sumLinies(d)||num(d.baseImp)||num(d.total)).toFixed(2);
+  if(!imp) return [];
+  const propi=origenApp(d.id);
+  const res=[];
+  for(const f of base.f){
+    if(f[ORIG_F]===propi) continue;                 // ell mateix
+    const impF=num(f[8])||num(f[5]);
+    let punts=0, per=[];
+    if(impF && Math.abs(impF-imp)<0.02){ punts+=3; per.push('mateix import'); }
+    const dies=diesEntre(f[7]||f[1], d.data);
+    if(dies!==null && dies<=20){ punts+=2; per.push('data molt propera'); }
+    if(d.obra && f[0] && normMat(f[0])===normMat(d.obra)){ punts+=1; per.push('mateixa obra'); }
+    if(d.proveidor && f[3] && sameProv(f[3],d.proveidor)){ punts+=2; per.push('mateix proveïdor'); }
+    if(d.numDoc && (f[6]||f[2]) && numsMatchAmpli(d.numDoc, f[6]||f[2])){ punts+=3; per.push('número compatible'); }
+    if(punts>=5) res.push({f, punts, per, clau:clauBaseF(f)});
+  }
+  return res.sort((a,b)=>b.punts-a.punts).slice(0,3);
+}
+/* Vincula el document a una factura que ja consta a la base: la marca com
+   a passada a costos i evita crear-ne una còpia. */
+async function vinculaABase(d, clau){
+  const f=base.f.find(x=>clauBaseF(x)===clau);
+  if(!f){ toast('Ja no es troba aquesta factura a la base'); return; }
+  d.vinculatA=clau;
+  treuDeBase(d.id);                 // per si ja s'hi havia afegit com a nova
+  f[9]=1;                           // ● passada a costos
+  d.estat='validat';
+  if(!d.obra && f[0]) d.obra=f[0];
+  base.updated=Date.now();
+  await saveBase(); persist(); drawBase(); render();
+  toast('Vinculada a la factura que ja hi havia · no s\'ha duplicat ✓');
 }
 function dupFactura(d){
   if(!base||d.kind!=='factura'||!d.numDoc||!d.proveidor) return null;
@@ -557,8 +603,28 @@ function renderAvisosBase(d){
   let h='';
   if(d.avisLectura) h+=`<div class="warnbox" style="border-color:#EAC08A;background:var(--warn-soft);color:#7A4A0E">⚠ ${esc(d.avisLectura)}</div>`;
   if(d.kind==='factura'){
-    const x=dupFactura(d);
-    if(x) h+=`<div class="warnbox">⚠ Aquesta factura <b>ja consta a la base de costos</b>: nº ${esc(x.num)} de ${esc(d.proveidor)} a <b>${esc(x.obra)}</b> (${esc(x.data)}, ${fmt(x.imp)} €). Comprova que no s'estigui entrant dues vegades.</div>`;
+    if(d.vinculatA){
+      h+=`<div class="warnbox" style="border-color:#A8D5B5;background:var(--ok-soft);color:#1C5B33">`+
+         `✓ Vinculada a una factura que <b>ja hi era a la base</b>. No s'ha duplicat. `+
+         `<button class="sug" data-desvincula="1" style="margin-left:8px">Desvincula</button></div>`;
+    }else{
+      const cand=d.dupIgnorat?[]:possiblesDuplicats(d);
+      if(cand.length){
+        const c=cand[0], f=c.f;
+        h+=`<div class="warnbox" style="border-color:#EAC08A;background:var(--warn-soft);color:#7A4A0E">`+
+           `⚠ <b>Aquesta factura sembla que ja està entrada.</b><br>`+
+           `A la base hi ha: <b>${esc(f[3])}</b> nº <b>${esc(f[6]||f[2])}</b> · ${esc(f[0])} · `+
+           `${esc(f[7]||f[1])} · <b>${fmt(num(f[8])||num(f[5]))} €</b><br>`+
+           `<span class="small-note">Coincideixen: ${esc(c.per.join(', '))}.</span><br>`+
+           `<button class="sug" data-vincula="${esc(c.clau)}" style="margin-top:7px">`+
+           `És la mateixa · vincula-la i no la dupliquis</button> `+
+           `<button class="sug" data-nodup="1" style="margin-top:7px">És una altra factura</button>`+
+           `</div>`;
+      }else{
+        const x=dupFactura(d);
+        if(x) h+=`<div class="warnbox">⚠ Aquesta factura <b>ja consta a la base de costos</b>: nº ${esc(x.num)} de ${esc(d.proveidor)} a <b>${esc(x.obra)}</b> (${esc(x.data)}, ${fmt(x.imp)} €). Comprova que no s'estigui entrant dues vegades.</div>`;
+      }
+    }
   }else{
     const x=albaraJaFacturat(d);
     if(x) h+=`<div class="warnbox">⚠ Aquest albarà <b>ja apareix a la base de costos</b>, dins la factura ${esc(x.fact)} de <b>${esc(x.obra)}</b> (${esc(x.data)}).</div>`;
@@ -581,6 +647,7 @@ document.getElementById('baseQ').oninput=()=>drawBase();
 document.getElementById('vistaF').onclick=()=>{ baseVista='f'; baseExpandit=null; drawBase(); };
 document.getElementById('vistaL').onclick=()=>{ baseVista='l'; baseExpandit=null; drawBase(); };
 document.getElementById('vistaP').onclick=()=>{ baseVista='p'; baseExpandit=null; drawBase(); };
+document.getElementById('vistaR').onclick=()=>{ baseVista='r'; baseExpandit=null; drawBase(); };
 document.getElementById('baseUpload').addEventListener('change', async e=>{ await actualitzaBase([...e.target.files]); e.target.value=''; });
 document.getElementById('baseUndo').onclick=()=>desfesBase();
 document.getElementById('baseObra').onchange=e=>{ baseObraSel=e.target.value; baseExpandit=null; drawBase(); };
@@ -644,7 +711,10 @@ document.getElementById('baseExport').onclick=async ()=>{
   if(!baseRowsVista.length){ toast('No hi ha res per exportar'); return; }
   const wb=XLSX.utils.book_new();
   let rows;
-  if(baseVista==='f'){
+  if(baseVista==='r'){
+    rows=[['OBRA','Nº FACTURES PROVEÏDOR','COST','Nº FACTURES CLIENT','FACTURAT','MARGE','MARGE %','COST SENSE FACTURAR']];
+    baseRowsVista.forEach(r=>rows.push([r[0],r[1],num(r[2]),r[3],num(r[4]),num(r[5]),r[6]===''?'':num(r[6]),num(r[7])]));
+  }else if(baseVista==='f'){
     rows=[['Obra','Data albarà','Nº Albarà','Proveïdor','Naturalesa','Import albarà','Nº Factura','Data factura','Import factura','Passat a costos','Venciment','Pagat']];
     baseRowsVista.forEach(f=>rows.push([f[0],f[1],f[2],f[3],f[4],num(f[5]),f[6],f[7],num(f[8]),f[9]?'●':'',f[10],f[11]||'']));
   }else{
@@ -668,7 +738,7 @@ let baseVista='f';
 let baseExpandit=null;
 let baseObraSel='';                 // '' = totes les obres
 let baseRowsVista=[];               // files que es veuen ara (per exportar)
-let baseSort={f:null, l:null, p:null};      // {idx, dir} per vista
+let baseSort={f:null, l:null, p:null, r:null};      // {idx, dir} per vista
 const BASE_MAX=1000;                // files que es dibuixen com a màxim
 
 /* Ordena una llista de files per una columna. `tipus` diu com comparar. */
@@ -892,6 +962,28 @@ function filesMaterial(ms){
     m.clau                                   // 11 (intern)
   ]);
 }
+/* Rendibilitat per obra: què hem gastat (factures de proveïdor) contra
+   què hem facturat al client (columnes «FACTURA A SIFERA» i «BASE SIFERA»
+   del vostre Excel). Les files amb import de client però sense número de
+   factura són totals del full i no es compten. */
+function rendibilitatObres(){
+  const m={};
+  const get=o=>(m[o]=m[o]||{obra:o,cost:0,nFac:0,facturat:0,nFacCli:0,costSenseFacturar:0,facsCli:new Set()});
+  (base?base.f:[]).forEach(f=>{
+    const o=f[0]||'(sense obra)'; const x=get(o);
+    const imp=num(f[8])||num(f[5]);
+    if(imp){ x.cost+=imp; x.nFac++; }
+    const fcli=String(f[13]||'').trim();
+    if(fcli){ x.facsCli.add(fcli); if(num(f[14])){ x.facturat+=num(f[14]); x.nFacCli++; } }
+    else if(imp) x.costSenseFacturar+=imp;
+  });
+  return Object.values(m).map(x=>{
+    const marge=x.facturat-x.cost;
+    return [x.obra, x.nFac, +x.cost.toFixed(2), x.facsCli.size, +x.facturat.toFixed(2),
+            +marge.toFixed(2), x.facturat>0?+(marge/x.facturat*100).toFixed(1):'',
+            +x.costSenseFacturar.toFixed(2)];
+  });
+}
 function drawBase(){
   if(!base) return;
   const q=document.getElementById('baseQ').value||'';
@@ -916,7 +1008,9 @@ function drawBase(){
         `${ambDetall.has(o)?'▸ ':'   '}${esc(o)} (${compta[o]})${ambDetall.has(o)?' · amb detall':''}</option>`).join('');
   }
   const filtraObra = r => !baseObraSel || r[0]===baseObraSel;
-  const bF=document.getElementById('vistaF'), bL=document.getElementById('vistaL'), bP=document.getElementById('vistaP');
+  const bF=document.getElementById('vistaF'), bL=document.getElementById('vistaL'),
+        bP=document.getElementById('vistaP'), bR=document.getElementById('vistaR');
+  if(bR) bR.classList.toggle('on', baseVista==='r');
   bF.classList.toggle('on', baseVista==='f'); bL.classList.toggle('on', baseVista==='l');
   if(bP) bP.classList.toggle('on', baseVista==='p');
   bF.textContent=`Factures (${base.f.length})`; bL.textContent=`Línies de detall (${base.l.length})`;
@@ -978,6 +1072,33 @@ function drawBase(){
     const suma=rows.reduce((a,f)=>a+num(f[8]||f[5]),0);
     foot.innerHTML=`${rows.length} factures — total ${fmt(suma)} €`+(rows.length>BASE_MAX?` (se'n mostren les primeres ${BASE_MAX})`:'')+
       `<br>Clica una factura per veure'n el desglossament. Només tenen detall les <b>${obresL.size} obres</b> amb fitxer «Factures [obra]» carregat (marcades amb ▸ al desplegable); a la resta, la Relació només porta el total.`;
+  }else if(baseVista==='r'){
+    tbl.style.minWidth='900px';
+    let rows=rendibilitatObres().filter(r=>!baseObraSel||r[0]===baseObraSel)
+                                .filter(r=>!q||coincideix(pc,r[0]));
+    rows=ordenaFiles(rows, baseSort.r||{idx:4,dir:-1},
+                     {0:'text',1:'num',2:'num',3:'num',4:'num',5:'num',6:'num',7:'num'});
+    baseRowsVista=rows;
+    tbl.innerHTML=
+      `<thead><tr>${th('Obra',0,'r')}${th('Fac. prov.',1,'r','right')}${th('COST',2,'r','right')}`+
+      `${th('Fac. client',3,'r','right')}${th('FACTURAT',4,'r','right')}${th('MARGE',5,'r','right')}`+
+      `${th('%',6,'r','right')}${th('Cost sense facturar',7,'r','right')}</tr></thead><tbody>`+
+      rows.slice(0,BASE_MAX).map(r=>{
+        const sensedades = r[4]===0;
+        const col = sensedades ? 'var(--ink-soft)' : (r[5]>=0?'var(--ok)':'var(--err)');
+        return `<tr><td>${esc(r[0])}</td><td class="imp">${r[1]}</td><td class="imp">${fmt(r[2])}</td>`+
+          `<td class="imp">${r[3]||''}</td><td class="imp">${r[4]?fmt(r[4]):'<span class="small-note">—</span>'}</td>`+
+          `<td class="imp" style="color:${col};font-weight:700">${sensedades?'':fmt(r[5])}</td>`+
+          `<td class="imp" style="color:${col}">${r[6]===''?'':r[6]+'%'}</td>`+
+          `<td class="imp">${r[7]?fmt(r[7]):''}</td></tr>`;
+      }).join('')+`</tbody>`;
+    connectaOrdenacio();
+    const tc=rows.reduce((a,r)=>a+num(r[2]),0), tf=rows.reduce((a,r)=>a+num(r[4]),0);
+    const tp=rows.reduce((a,r)=>a+num(r[7]),0);
+    foot.innerHTML=`${rows.length} obres — cost ${fmt(tc)} € · facturat ${fmt(tf)} € · `+
+      `<b style="color:${tf-tc>=0?'var(--ok)':'var(--err)'}">marge ${fmt(tf-tc)} €</b>`+
+      `<br><b>Cost sense facturar: ${fmt(tp)} €</b> — factures de proveïdor que encara no tenen assignada cap factura al client.`+
+      `<br><span class="small-note">Les obres amb «—» a FACTURAT no tenen omplerta la columna «BASE SIFERA» al vostre Excel, així que no se'n pot calcular el marge.</span>`;
   }else if(baseVista==='p'){
     tbl.style.minWidth='1040px';
     // partim de les línies (filtrades per obra) i les agrupem per material
@@ -1074,8 +1195,24 @@ async function actualitzaBase(files){
           for(let i=0;i<Math.min(rows.length,20);i++)
             if(rows[i].some(c=>{const u=String(c).toUpperCase();return u.includes('PROVEÏDOR')||u.includes('PROVEIDOR');})){h=i;break;}
           if(h<0) continue;
+          /* Les columnes NO estan sempre a la mateixa posició: hi ha fulls
+             sense la columna del ●, i tot queda corregut. Les localitzem
+             pel nom de la capçalera, prenent PROVEÏDOR com a referència. */
+          const cap=rows[h].map(c=>String(c||'').trim().toUpperCase());
+          const iProv=cap.findIndex(c=>c.includes('PROVEÏDOR')||c.includes('PROVEIDOR'));
+          const busca=n=>{ const i=cap.findIndex(c=>c===n); return i<0?null:i; };
+          const cDA=iProv-2, cNA=iProv-1, cNAT=iProv+1, cIA=iProv+2,
+                cFC=iProv+3, cDF=iProv+4, cIF=iProv+5;
+          const cVENC=busca('VENCIMENT'), cPAG=busca('PAGAT');
+          const cFCLI=busca('FACTURA A SIFERA'), cBCLI=busca('BASE SIFERA');
+          // la columna del ● és la que queda entre l'import i el venciment
+          const cMARK=(cVENC!==null && cVENC===cIF+2) ? cIF+1 : null;
           for(const r of rows.slice(h+1)){
-            const dA=r[0],nA=r[1],prov=r[2],nat=r[3],iA=r[4],fc=r[5],dF=r[6],iF=r[7],mark=r[8],venc=r[9],pag=r[10];
+            const dA=cDA>=0?r[cDA]:'', nA=cNA>=0?r[cNA]:'', prov=r[iProv],
+                  nat=r[cNAT], iA=r[cIA], fc=r[cFC], dF=r[cDF], iF=r[cIF],
+                  mark=cMARK!==null?r[cMARK]:'',
+                  venc=cVENC!==null?r[cVENC]:'', pag=cPAG!==null?r[cPAG]:'',
+                  fcli=cFCLI!==null?r[cFCLI]:'', bcli=cBCLI!==null?r[cBCLI]:'';
             if([dA,nA,prov,nat,iA,fc,dF,iF,mark,venc,pag].every(x=>x===''||x==null)) continue;
             if(filaSaltable(nA,prov)) continue;
             const teDoc=String(prov||'').trim()||String(fc||'').trim();
@@ -1083,7 +1220,10 @@ async function actualitzaBase(files){
             if(!teDoc&&!albOk) continue;
             nou.push([sn,isoJS(dA),String(nA||'').trim(),String(prov||'').trim(),String(nat||'').trim(),
                       num(iA),String(fc||'').trim(),isoJS(dF),num(iF),
-                      String(mark||'').trim()?1:0,isoJS(venc),String(pag||'').trim()]);
+                      String(mark||'').trim()?1:0,isoJS(venc),String(pag||'').trim(),
+                      '',                                   // 12: origen (app)
+                      String(fcli||'').trim(),              // 13: factura al client
+                      num(bcli)]);                          // 14: base facturada al client
           }
         }
         if(nou.length){
@@ -1870,6 +2010,9 @@ function lligaDetall(d){
   det.querySelectorAll('[data-descasa]').forEach(b=>b.onclick=()=>descasa(d.id,+b.dataset.descasa));
   det.querySelectorAll('[data-descasa-alb]').forEach(b=>b.onclick=()=>descasa(+b.dataset.descasaAlb,d.id));
   det.querySelectorAll('[data-sugobra]').forEach(b=>b.onclick=()=>{ d.obra=b.dataset.sugobra; d.obraAuto=false; persist(); render(); });
+  det.querySelectorAll('[data-vincula]').forEach(b=>b.onclick=()=>vinculaABase(d, b.dataset.vincula));
+  det.querySelectorAll('[data-nodup]').forEach(b=>b.onclick=()=>{ d.dupIgnorat=true; persist(); render(); toast('D\'acord: es tractarà com una factura diferent'); });
+  det.querySelectorAll('[data-desvincula]').forEach(b=>b.onclick=()=>{ d.vinculatA=null; persist(); sincronitzaBase(d); render(); });
 
   // accions
   det.querySelector('#btnDel').onclick=()=>esborraDoc(d.id);
