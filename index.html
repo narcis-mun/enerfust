@@ -190,6 +190,9 @@ table.linies .del:hover{color:var(--err)}
 .basetbl td.imp,.basetbl td.mono{font-family:var(--mono)}
 .basetbl td.imp{text-align:right}
 .basetbl tr.frow{cursor:pointer}
+.basetbl tr.frow.sensedet{cursor:default}
+.basetbl tr.frow.sensedet .caret{color:#C8D2DA}
+.basetbl tr.frow.sensedet td:first-child{color:var(--ink-soft)}
 .basetbl tr.frow:hover td{background:#EFF4F8}
 .basetbl tr.frow.obert td{background:var(--slate-soft)}
 .basetbl .caret{display:inline-block;width:14px;color:var(--slate);font-size:11px}
@@ -907,8 +910,10 @@ function drawBase(){
     const obres=Object.keys(compta).sort((a,b)=>a.localeCompare(b,'ca'));
     const total=(baseVista==='f'?base.f:base.l).length;
     if(baseObraSel && !compta[baseObraSel]) baseObraSel='';
+    const ambDetall=new Set(base.l.map(l=>l[0]));
     sel.innerHTML=`<option value="">Totes les obres (${total})</option>`+
-      obres.map(o=>`<option value="${esc(o)}"${o===baseObraSel?' selected':''}>${esc(o)} (${compta[o]})</option>`).join('');
+      obres.map(o=>`<option value="${esc(o)}"${o===baseObraSel?' selected':''}>`+
+        `${ambDetall.has(o)?'▸ ':'   '}${esc(o)} (${compta[o]})${ambDetall.has(o)?' · amb detall':''}</option>`).join('');
   }
   const filtraObra = r => !baseObraSel || r[0]===baseObraSel;
   const bF=document.getElementById('vistaF'), bL=document.getElementById('vistaL'), bP=document.getElementById('vistaP');
@@ -933,8 +938,10 @@ function drawBase(){
       rows.slice(0,BASE_MAX).map(f=>{
         const clau=[f[0],f[3],f[6]||f[2],f[7]||f[1]].join('|'); claus.add(clau);
         const obert = baseExpandit===clau;
-        let html=`<tr class="frow ${obert?'obert':''}" data-clau="${esc(clau)}">`+
-          `<td><span class="caret">${obert?'▾':'▸'}</span>${esc(f[0])}</td><td>${esc(f[3])}</td>`+
+        const teDetall=obresL.has(f[0]);
+        let html=`<tr class="frow ${obert?'obert':''} ${teDetall?'':'sensedet'}" data-clau="${esc(clau)}" `+
+          `title="${teDetall?'Clica per veure el desglossament':'Aquesta obra no té fitxer «Factures [obra]» carregat'}">`+
+          `<td><span class="caret">${teDetall?(obert?'▾':'▸'):'·'}</span>${esc(f[0])}</td><td>${esc(f[3])}</td>`+
           `<td class="mono">${esc(f[6]||f[2])}</td><td>${esc(f[7]||f[1])}</td>`+
           `<td class="imp">${fmt(f[8]||f[5])}</td><td style="text-align:center">${f[9]?'●':''}</td>`+
           `<td>${esc(f[10])}</td><td>${esc(f[11])}</td></tr>`;
@@ -970,7 +977,7 @@ function drawBase(){
     connectaOrdenacio();
     const suma=rows.reduce((a,f)=>a+num(f[8]||f[5]),0);
     foot.innerHTML=`${rows.length} factures — total ${fmt(suma)} €`+(rows.length>BASE_MAX?` (se'n mostren les primeres ${BASE_MAX})`:'')+
-      `<br>Clica una factura per veure'n el desglossament línia a línia (disponible a les obres amb .ods carregat).`;
+      `<br>Clica una factura per veure'n el desglossament. Només tenen detall les <b>${obresL.size} obres</b> amb fitxer «Factures [obra]» carregat (marcades amb ▸ al desplegable); a la resta, la Relació només porta el total.`;
   }else if(baseVista==='p'){
     tbl.style.minWidth='1040px';
     // partim de les línies (filtrades per obra) i les agrupem per material
