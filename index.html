@@ -265,7 +265,7 @@ table.linies .del:hover{color:var(--err)}
     </div>
     <div class="modal-b">
       <div style="display:flex;gap:10px;align-items:center;margin-bottom:8px;flex-wrap:wrap">
-        <span class="seg"><button id="vistaF" class="on">Factures</button><button id="vistaL">Línies de detall</button></span>
+        <span class="seg"><button id="vistaF" class="on">Factures</button><button id="vistaL">Línies de detall</button><button id="vistaP">💶 Preus per material</button></span>
         <select id="baseObra" title="Filtra per obra" style="border:1px solid var(--line);border-radius:7px;padding:7px 9px;max-width:230px"></select>
         <input id="baseQ" placeholder="Cerca per proveïdor, concepte, codi o nº…" style="flex:1;min-width:200px;border:1px solid var(--line);border-radius:7px;padding:7px 10px">
         <button class="btn small" id="baseExport" title="Baixa en Excel exactament el que estàs veient">⬇ Exporta la vista</button>
@@ -522,8 +522,9 @@ document.getElementById('btnBase').onclick=()=>{ document.getElementById('baseMo
 document.getElementById('baseClose').onclick=()=>document.getElementById('baseModal').classList.remove('open');
 document.getElementById('baseModal').addEventListener('click',e=>{ if(e.target.id==='baseModal') e.target.classList.remove('open'); });
 document.getElementById('baseQ').oninput=()=>drawBase();
-document.getElementById('vistaF').onclick=()=>{ baseVista='f'; drawBase(); };
-document.getElementById('vistaL').onclick=()=>{ baseVista='l'; drawBase(); };
+document.getElementById('vistaF').onclick=()=>{ baseVista='f'; baseExpandit=null; drawBase(); };
+document.getElementById('vistaL').onclick=()=>{ baseVista='l'; baseExpandit=null; drawBase(); };
+document.getElementById('vistaP').onclick=()=>{ baseVista='p'; baseExpandit=null; drawBase(); };
 document.getElementById('baseUpload').addEventListener('change', async e=>{ await actualitzaBase([...e.target.files]); e.target.value=''; });
 document.getElementById('baseUndo').onclick=()=>desfesBase();
 document.getElementById('baseObra').onchange=e=>{ baseObraSel=e.target.value; baseExpandit=null; drawBase(); };
@@ -588,8 +589,8 @@ document.getElementById('baseExport').onclick=async ()=>{
   const wb=XLSX.utils.book_new();
   let rows;
   if(baseVista==='f'){
-    rows=[['Obra','Data albarà','Nº Albarà','Proveïdor','Naturalesa','Import albarà','Nº Factura','Data factura','Import factura','Pagat','Venciment']];
-    baseRowsVista.forEach(f=>rows.push([f[0],f[1],f[2],f[3],f[4],num(f[5]),f[6],f[7],num(f[8]),f[9]?'●':'',f[10]]));
+    rows=[['Obra','Data albarà','Nº Albarà','Proveïdor','Naturalesa','Import albarà','Nº Factura','Data factura','Import factura','Passat a costos','Venciment','Pagat']];
+    baseRowsVista.forEach(f=>rows.push([f[0],f[1],f[2],f[3],f[4],num(f[5]),f[6],f[7],num(f[8]),f[9]?'●':'',f[10],f[11]||'']));
   }else{
     rows=[['Obra','Data','Nº Factura','Nº Albarà','Codi','Quantitat','Concepte','Preu','% descompte','Import','Proveïdor']];
     baseRowsVista.forEach(l=>rows.push([l[0],l[1],l[2],l[3],l[4],num(l[5]),l[6],num(l[7]),num(l[8]),num(l[9]),l[10]]));
@@ -611,7 +612,7 @@ let baseVista='f';
 let baseExpandit=null;
 let baseObraSel='';                 // '' = totes les obres
 let baseRowsVista=[];               // files que es veuen ara (per exportar)
-let baseSort={f:null, l:null};      // {idx, dir} per vista
+let baseSort={f:null, l:null, p:null};      // {idx, dir} per vista
 const BASE_MAX=1000;                // files que es dibuixen com a màxim
 
 /* Ordena una llista de files per una columna. `tipus` diu com comparar. */
@@ -662,6 +663,66 @@ function connectaOrdenacio(){
     drawBase();
   });
 }
+/* Agrupa les línies per MATERIAL i en calcula l'històric de preus.
+   Important: agrupem pel CONCEPTE, no pel codi. A la vostra base, la
+   columna «Codi» sovint no és un codi de material sinó un capítol, una
+   data o una categoria (p. ex. «HT1» agrupa 130 conceptes diferents),
+   i agrupar-hi barrejaria materials que no tenen res a veure. */
+function normMat(s){
+  return String(s||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'')
+    .toUpperCase().replace(/[^A-Z0-9 ]/g,' ').replace(/\s+/g,' ').trim();
+}
+function agrupaMaterials(linies){
+  const map=new Map();
+  for(const l of linies){
+    const con=String(l[6]||'').trim();
+    const clau=normMat(con);
+    if(!clau) continue;
+    let m=map.get(clau);
+    if(!m){ m={clau, codi:'', concepte:con, n:0, qt:0, imp:0, min:null, max:null,
+               ultim:null, provs:new Set(), codis:new Map(), files:[]}; map.set(clau,m); }
+    const q=num(l[5]), im=num(l[9]);
+    let pr=num(l[7]);
+    if(!(pr>0) && q>0) pr=im/q;              // preu unitari deduït si no hi consta
+    m.n++;
+    if(isFinite(q)) m.qt+=q;
+    if(isFinite(im)) m.imp+=im;
+    if(pr>0 && isFinite(pr)){
+      if(m.min===null||pr<m.min) m.min=pr;
+      if(m.max===null||pr>m.max) m.max=pr;
+      const data=String(l[1]||'');
+      if(!m.ultim || data>m.ultim.data) m.ultim={preu:pr, data, prov:String(l[10]||''), obra:l[0]};
+    }
+    const pv=String(l[10]||'').trim(); if(pv) m.provs.add(pv);
+    const cd=String(l[4]||'').trim(); if(cd) m.codis.set(cd,(m.codis.get(cd)||0)+1);
+    m.files.push(l);
+  }
+  // codi informatiu: el més freqüent d'aquell material
+  for(const m of map.values()){
+    let millor='', n=0;
+    m.codis.forEach((v,k)=>{ if(v>n){ n=v; millor=k; } });
+    m.codi=millor;
+  }
+  return [...map.values()];
+}
+/* Converteix cada material en fila de taula (per ordenar i exportar igual
+   que les altres vistes). */
+function filesMaterial(ms){
+  return ms.map(m=>[
+    m.codi,                                  // 0
+    m.concepte,                              // 1
+    m.n,                                     // 2
+    m.provs.size,                            // 3
+    m.min===null?'':+m.min.toFixed(2),       // 4
+    (m.qt>0 && isFinite(m.imp/m.qt)) ? +(m.imp/m.qt).toFixed(2) : '',  // 5  preu mitjà ponderat
+    m.max===null?'':+m.max.toFixed(2),       // 6
+    m.ultim?+m.ultim.preu.toFixed(2):'',     // 7
+    m.ultim?m.ultim.data:'',                 // 8
+    m.ultim?m.ultim.prov:'',                 // 9
+    +m.imp.toFixed(2),                       // 10 import acumulat
+    m.clau                                   // 11 (intern)
+  ]);
+}
 function drawBase(){
   if(!base) return;
   const q=document.getElementById('baseQ').value||'';
@@ -683,8 +744,9 @@ function drawBase(){
       obres.map(o=>`<option value="${esc(o)}"${o===baseObraSel?' selected':''}>${esc(o)} (${compta[o]})</option>`).join('');
   }
   const filtraObra = r => !baseObraSel || r[0]===baseObraSel;
-  const bF=document.getElementById('vistaF'), bL=document.getElementById('vistaL');
+  const bF=document.getElementById('vistaF'), bL=document.getElementById('vistaL'), bP=document.getElementById('vistaP');
   bF.classList.toggle('on', baseVista==='f'); bL.classList.toggle('on', baseVista==='l');
+  if(bP) bP.classList.toggle('on', baseVista==='p');
   bF.textContent=`Factures (${base.f.length})`; bL.textContent=`Línies de detall (${base.l.length})`;
   const tbl=document.getElementById('baseTbl'), foot=document.getElementById('baseFoot');
 
@@ -697,7 +759,7 @@ function drawBase(){
     baseRowsVista=rows;
     const claus=new Set();
     tbl.innerHTML=
-      `<thead><tr>${th('Obra',0,'f')}${th('Proveïdor',3,'f')}${th('Factura / Albarà',6,'f')}${th('Data',7,'f')}${th('Import',8,'f','right')}${th('●',9,'f')}${th('Venc.',10,'f')}${th('Pagat',11,'f')}</tr></thead><tbody>`+
+      `<thead><tr>${th('Obra',0,'f')}${th('Proveïdor',3,'f')}${th('Factura / Albarà',6,'f')}${th('Data',7,'f')}${th('Import',8,'f','right')}${th('● passat a costos',9,'f')}${th('Venc.',10,'f')}${th('Pagat',11,'f')}</tr></thead><tbody>`+
       rows.slice(0,BASE_MAX).map(f=>{
         const clau=[f[0],f[3],f[6]||f[2],f[7]||f[1]].join('|'); claus.add(clau);
         const obert = baseExpandit===clau;
@@ -736,6 +798,55 @@ function drawBase(){
     const suma=rows.reduce((a,f)=>a+num(f[8]||f[5]),0);
     foot.innerHTML=`${rows.length} factures — total ${fmt(suma)} €`+(rows.length>BASE_MAX?` (se'n mostren les primeres ${BASE_MAX})`:'')+
       `<br>Clica una factura per veure'n el desglossament línia a línia (disponible a les obres amb .ods carregat).`;
+  }else if(baseVista==='p'){
+    tbl.style.minWidth='1040px';
+    // partim de les línies (filtrades per obra) i les agrupem per material
+    const base_l=base.l.filter(filtraObra);
+    let mats=agrupaMaterials(base_l);
+    if(q) mats=mats.filter(m=> normProv(m.concepte).includes(qn) ||
+                               normProv(m.codi).includes(qn) ||
+                               [...m.provs].some(pv=>normProv(pv).includes(qn)));
+    const perClau=new Map(mats.map(m=>[m.clau,m]));
+    let rows=filesMaterial(mats);
+    rows=ordenaFiles(rows, baseSort.p, {0:'text',1:'text',2:'num',3:'num',4:'num',5:'num',6:'num',7:'num',8:'data',9:'text',10:'num'});
+    baseRowsVista=rows;
+    tbl.innerHTML=
+      `<thead><tr>${th('Codi',0,'p')}${th('Material / concepte',1,'p')}${th('Cops',2,'p','right')}${th('Prov.',3,'p','right')}`+
+      `${th('Preu mín',4,'p','right')}${th('Preu mitjà',5,'p','right')}${th('Preu màx',6,'p','right')}`+
+      `${th('Últim preu',7,'p','right')}${th('Data',8,'p')}${th('Últim proveïdor',9,'p')}${th('Acumulat',10,'p','right')}</tr></thead><tbody>`+
+      rows.slice(0,BASE_MAX).map(r=>{
+        const clau=r[11], obert=baseExpandit===clau;
+        const varia = (r[4]!=='' && r[6]!=='' && r[4]>0) ? (r[6]-r[4])/r[4] : 0;
+        const avis = varia>=0.25 ? ` <span class="badge-err" title="El preu ha oscil·lat molt">±${Math.round(varia*100)}%</span>` : '';
+        let html=`<tr class="frow ${obert?'obert':''}" data-mat="${esc(clau)}">`+
+          `<td class="mono"><span class="caret">${obert?'▾':'▸'}</span>${esc(r[0])}</td>`+
+          `<td title="${esc(r[1])}">${esc(r[1])}</td>`+
+          `<td class="imp">${r[2]}</td><td class="imp">${r[3]}</td>`+
+          `<td class="imp">${r[4]===''?'':fmt(r[4])}</td><td class="imp"><b>${r[5]===''?'':fmt(r[5])}</b>${avis}</td>`+
+          `<td class="imp">${r[6]===''?'':fmt(r[6])}</td><td class="imp">${r[7]===''?'':fmt(r[7])}</td>`+
+          `<td>${esc(r[8])}</td><td>${esc(r[9])}</td><td class="imp">${fmt(r[10])}</td></tr>`;
+        if(obert){
+          const m=perClau.get(clau);
+          const ls=(m?m.files:[]).slice().sort((a,b)=>String(b[1]||'').localeCompare(String(a[1]||'')));
+          html+=`<tr class="expandrow"><td colspan="11"><table class="subtbl">`+
+            `<thead><tr><th>Data</th><th>Obra</th><th>Proveïdor</th><th>Factura</th><th style="text-align:right">Quant.</th><th style="text-align:right">Preu unitari</th><th style="text-align:right">Import</th></tr></thead><tbody>`+
+            ls.slice(0,200).map(l=>{
+              const qq=num(l[5]), pr=num(l[7])||(qq>0?num(l[9])/qq:0);
+              return `<tr><td>${esc(l[1])}</td><td>${esc(l[0])}</td><td>${esc(l[10])}</td><td class="mono">${esc(l[2])}</td>`+
+                     `<td class="imp">${l[5]||''}</td><td class="imp">${pr?fmt(pr):''}</td><td class="imp">${fmt(l[9])}</td></tr>`;
+            }).join('')+
+            `</tbody></table><div class="small-note" style="margin-top:6px">${ls.length} compres${ls.length>200?" (se'n mostren les 200 més recents)":''}</div></td></tr>`;
+        }
+        return html;
+      }).join('')+`</tbody>`;
+    connectaOrdenacio();
+    tbl.querySelectorAll('tr.frow').forEach(tr=>tr.onclick=()=>{
+      baseExpandit=(baseExpandit===tr.dataset.mat)?null:tr.dataset.mat; drawBase();
+    });
+    const acum=rows.reduce((a,r)=>a+num(r[10]),0);
+    foot.innerHTML=`${rows.length} materials diferents — ${fmt(acum)} € acumulats`+
+      (rows.length>BASE_MAX?` (se'n mostren els primers ${BASE_MAX})`:'')+
+      `<br>Clica un material per veure totes les compres (data, obra, proveïdor i preu unitari). El <b>preu mitjà</b> és ponderat per quantitat. La marca ±% avisa que el preu ha ballat molt entre la compra més barata i la més cara.`;
   }else{
     tbl.style.minWidth='1080px';
     let rows=base.l.filter(filtraObra).filter(l=>!q || normProv(l[0]).includes(qn) || normProv(l[10]).includes(qn) ||
@@ -1628,12 +1739,14 @@ function exporta(){
   }
 
   // 2) Resum per a "Relació costos obres" (una fila per document validat)
-  const rc=[['OBRA','DATA ALBARÀ','Nº ALBARÀ','PROVEÏDOR','NATURALESA','IMPORT ALBARÀ','Nº FACTURA','DATA FACTURA','IMPORT FACTURA','●','VENCIMENT']];
+  const rc=[['OBRA','DATA ALBARÀ','Nº ALBARÀ','PROVEÏDOR','NATURALESA','IMPORT ALBARÀ','Nº FACTURA','DATA FACTURA','IMPORT FACTURA','● PASSAT A COSTOS','VENCIMENT']];
   for(const d of state.docs.filter(x=>x.estat==='validat')){
     const imp=+(sumLinies(d)||d.baseImp||d.total).toFixed(2);
     if(d.kind==='factura'){
       const albs=d.albaransCasats.map(docById).filter(Boolean).map(a=>a.numDoc).filter(Boolean).join(', ');
-      rc.push([d.obra||'', '', albs, d.proveidor, '', '', d.numDoc, d.data, imp, '●', d.venciment||'']);
+      // ● = passat a costos. Si no sabem l'obra, no el posem: així queda
+      // marcat com a pendent d'assignar i no es dona per tancat.
+      rc.push([d.obra||'', '', albs, d.proveidor, '', '', d.numDoc, d.data, imp, d.obra?'●':'', d.venciment||'']);
     }else if(!d.casatAmb){
       rc.push([d.obra||'', d.data, d.numDoc, d.proveidor, '', imp, '', '', '', '', '']);
     }
@@ -1672,7 +1785,20 @@ function exporta(){
    ALTRES BOTONS
 ============================================================ */
 document.getElementById('btnEsborraTot').onclick=async ()=>{
-  if(!await confirmaModal('Això esborra TOTS els documents entrats en aquesta eina. La base de costos i els teus Excels no es toquen. Continuar?')) return;
+  // Avisem específicament dels que encara NO estan passats a costos: són els
+  // que es perdrien i s'haurien de tornar a escanejar.
+  const pend=state.docs.filter(d=>!d.obra || d.estat!=='validat');
+  let msg='Això esborra TOTS els documents entrats en aquesta eina ('+state.docs.length+').\n'+
+          'La base de costos i els teus Excels no es toquen.';
+  if(pend.length){
+    const sense=pend.filter(d=>!d.obra).length;
+    msg+='\n\n⚠ ATENCIÓ: '+pend.length+' document(s) encara NO estan passats a costos'+
+         (sense?' ('+sense+' sense obra assignada)':'')+
+         '.\nSi continues, es perdran i s\'hauran de tornar a escanejar.\n\n'+
+         'Consell: filtra per «Sense obra» / «Per validar» i resol-los abans, o exporta l\'Excel primer.';
+  }
+  msg+='\n\nContinuar?';
+  if(!await confirmaModal(msg)) return;
   state={docs:[],nextId:1}; selId=null;
   try{ await Store.set('enerfust_v1', serialitzaState()); }catch(e){}
   render();
