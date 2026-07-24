@@ -265,7 +265,7 @@ table.linies .del:hover{color:var(--err)}
   <div class="modal">
     <div class="modal-h">
       <h2>📚 Base de costos</h2>
-      <span class="src" style="font-family:var(--mono);font-size:10px;opacity:.75" title="Versió de l'aplicació desplegada">v2026.07.23-11</span>
+      <span class="src" style="font-family:var(--mono);font-size:10px;opacity:.75" title="Versió de l'aplicació desplegada">v2026.07.24-14</span>
       <span class="src" id="baseStats"></span>
       <span style="flex:1"></span>
       <label class="btn small">⇪ Actualitza des dels teus fitxers
@@ -1642,8 +1642,25 @@ const TANDA = 15;
 function promptPag1(){
 return `Analitza el document (albarà o factura d'un proveïdor). El CLIENT acostuma a ser "Serveis Tècnics Enerfust SL"; el PROVEÏDOR és l'altra empresa, la que emet el document.
 Torna NOMÉS aquest JSON (claus exactes):
-{"tipus":"albara"|"factura","proveidor":"empresa emissora","num":"número del document","data":"AAAA-MM-DD","venciment":"AAAA-MM-DD o \\"\\"","obra":"obra/projecte/adreça d'entrega si apareix, sinó \\"\\"","base_imposable":número,"iva_percent":número,"total":número,"albarans_ref":["números d'albarà referenciats si és factura"],"linies":[["nº albarà de la línia o \\"\\"","codi article","concepte breu",quantitat,preu_unitari,descompte_%,import]],"mes":true|false}
-Regles: "base_imposable" és la suma neta abans d'IVA; "iva_percent" és el tipus d'IVA (0, 4, 10, 21…); si la factura és amb inversió del subjecte passiu o exempta, iva_percent=0 i base_imposable=total. "total" és l'import final del document (amb IVA si n'hi ha). Els imports de "linies" són SEMPRE nets (sense IVA), com apareixen a la columna d'import/subtotal de cada línia. A "linies" posa-hi NOMÉS els ${TANDA} primers conceptes visibles, en ordre; marca "mes":true NOMÉS si en queden més després d'aquests. Números amb punt decimal i sense separador de milers; si un valor no hi és, "" o 0; concepte màxim 45 caràcters; la mà d'obra i els serveis també són línies.`;
+{"tipus":"albara"|"factura","proveidor":"empresa emissora","num":"número del document","data":"AAAA-MM-DD","venciment":"AAAA-MM-DD o \\"\\"","obra":"obra/projecte/adreça d'entrega si apareix, sinó \\"\\"","base_imposable":número,"iva_percent":número,"total":número,"albarans_ref":["números d'albarà referenciats si és factura"],"pag_x":número o 0,"pag_z":número o 0,"es_final":true|false,"linies":[["nº albarà de la línia o \\"\\"","codi article","concepte breu",quantitat,preu_unitari,descompte_%,import]],"mes":true|false}
+Regles: "base_imposable" és la suma neta abans d'IVA; "iva_percent" és el tipus d'IVA (0, 4, 10, 21…); si la factura és amb inversió del subjecte passiu o exempta, iva_percent=0 i base_imposable=total. "total" és l'import final del document (amb IVA si n'hi ha). Els imports de "linies" són SEMPRE nets (sense IVA), com apareixen a la columna d'import/subtotal de cada línia. A "linies" posa-hi NOMÉS els ${TANDA} primers conceptes visibles, en ordre; marca "mes":true NOMÉS si en queden més després d'aquests. Números amb punt decimal i sense separador de milers; si un valor no hi és, "" o 0; concepte màxim 45 caràcters; la mà d'obra i els serveis també són línies.\nFINAL DEL DOCUMENT: un albarà o una factura s'acaba quan hi apareix el tancament amb IVA i TOTAL (TOTAL, TOTAL FACTURA, TOTAL ALBARÀ, TOTAL A PAGAR, IMPORT TOTAL, IMPORTE TOTAL, BASE IMPOSABLE/IMPONIBLE + IVA), o quan la numeració diu «pàgina X de Z» / «pág. X de Z» / «X/Z» i X és igual a Z. En canvi, el document CONTINUA a la pàgina següent si hi apareix qualsevol d'aquestes marques: «continua», «continúa», «segueix», «sigue», «passa full», «pasa hoja», «cont.», «s'adjunta full», «veure full següent», «ver hoja siguiente», «SUMA I SEGUEIX», «SUMA Y SIGUE», «subtotal pàgina», «subtotal página», o si la numeració diu que X és menor que Z. ATENCIÓ: «SUMA Y SIGUE» / «SUMA I SEGUEIX» mostra un import acumulat però NO és el total final: vol dir que el document continua. Omple "pag_x" i "pag_z" si el document indica numeració de pàgines (si no, 0), i posa "es_final":true només si en aquesta pàgina hi ha el tancament (IVA i TOTAL) o és l'última segons la numeració.`;
+}
+/* Lectura directa d'una pàgina, sense numeració de conceptes. La fem
+   servir quan la lectura per tandes no ha tornat res d'aquella pàgina
+   (típic a la 2a pàgina d'un albarà, on la taula continua sense
+   capçaleres i el model no la reconeix). */
+function promptPagSencera(d, pag, total){
+  return `Aquesta imatge és la pàgina ${pag} de ${total} d'un mateix ${d.kind==='factura'?'factura':'albarà'}`+
+    (d.numDoc?` (nº ${d.numDoc}`:'')+(d.proveidor?` de ${d.proveidor})`:(d.numDoc?')':''))+
+    `. La taula de conceptes ve CONTINUADA de la pàgina anterior i pot no tenir capçaleres.\n`+
+    `Torna NOMÉS aquest JSON amb TOTES les línies de concepte que apareguin en AQUESTA pàgina:\n`+
+    `{"linies":[["nº albarà o \\"\\"","codi","concepte breu",quantitat,preu,descompte_%,import]],"total":número}\n`+
+    `Si la pàgina no té cap concepte (és una pàgina de condicions, segells o signatures), torna {"linies":[],"total":0}. `+
+    `A "total" posa-hi el TOTAL FINAL del document només si apareix en aquesta pàgina; si no, 0. `+
+    `Recorda: el document s'acaba on hi ha el tancament amb IVA i TOTAL, o on la numeració diu «pàgina Z de Z». `+
+    `Si hi veus «suma i segueix», «suma y sigue», «continua», «sigue» o «passa full», el document encara no s'ha acabat `+
+    `i l'import que hi surt és un acumulat, NO el total final. `+
+    `Concepte màxim 45 caràcters; números amb punt decimal.`;
 }
 function promptTanda(d, pag, desDe, mida, mode){
 const on = mode==='doc'
@@ -1759,7 +1776,9 @@ async function liniesEnTandes(d, block, pag, totalPags, desDe, previes, mode){
       break;
     }
     const ls=(j.linies||[]).map(liniaFromArr);
-    if(num(j.total)>0) d.total=num(j.total);
+    // Només acceptem el total si el model diu que ja no queden més conceptes:
+    // així un «suma i segueix» (acumulat de pàgina) no substitueix el total real.
+    if(num(j.total)>0 && j.mes!==true) d.total=num(j.total);
     if(!ls.length) break;
     const firmes=ls.map(firmaLinia);
     /* Relectura pura: el model ha ignorat l'ordre demanat i ha tornat
@@ -1815,7 +1834,11 @@ async function extractDoc(d, files){
       const j=await llegeixJSON2([block,{type:'text',text:promptPag1()}]);
       d.raw=JSON.stringify(j).slice(0,4000);
       aplicaCapçalera(d,j);
-      if(j.mes){ d.linies=d.linies.concat(await liniesEnTandes(d, block, 1, 1, d.linies.length+1, d.linies, 'doc')); }
+      /* No ens refiem del «mes» del model: en documents de més d'una
+         pàgina sovint diu que ja no en queden i es perden les pàgines
+         següents. Continuem sempre; si de veritat no n'hi ha més, la
+         crida següent tornarà una llista buida i s'aturarà sola. */
+      d.linies=d.linies.concat(await liniesEnTandes(d, block, 1, 1, d.linies.length+1, d.linies, 'doc'));
       d.progres=''; persist(); render();
       return;
     }
@@ -1836,13 +1859,33 @@ async function extractDoc(d, files){
       aplicaCapçalera(d,j);
       if(j.mes){ d.linies=d.linies.concat(await liniesEnTandes(d, pages[0], 1, pages.length, d.linies.length+1, d.linies, 'pag')); }
     }else{
-      d.linies=d.linies.concat(await liniesEnTandes(d, pages[i], i+1, pages.length, 1, [], 'pag'));
+      let noves=await liniesEnTandes(d, pages[i], i+1, pages.length, 1, [], 'pag');
+      if(!noves.length){
+        /* Segona oportunitat: de vegades el model no reconeix la
+           continuació d'una taula. Li ho demanem sense numeracions. */
+        d.progres='rellegint la pàgina '+(i+1)+'…'; render();
+        try{
+          const j2=await llegeixJSON([pages[i],{type:'text',text:promptPagSencera(d,i+1,pages.length)}]);
+          noves=(j2.linies||[]).map(liniaFromArr);
+          if(num(j2.total)>0) d.total=num(j2.total);
+        }catch(e){ console.debug('rellegida pàgina', i+1, e); }
+      }
+      if(!noves.length)
+        d.avisLectura=(d.avisLectura||'')+`De la pàgina ${i+1} no se n'ha tret cap concepte: comprova-la a mà. `;
+      d.linies=d.linies.concat(noves);
     }
     persist(); render();
   }
+  /* Document complet? Criteri de la casa: s'acaba on hi ha IVA i TOTAL,
+     o quan la numeració diu «pàgina Z de Z». */
+  if(d.pagZ>1 && pages.length<d.pagZ)
+    d.avisLectura=(d.avisLectura||'')+`El document diu que té ${d.pagZ} pàgines i només se n'han pujat ${pages.length}: en falten per escanejar. `;
+  else if(pages.length===1 && !d.esFinal && !d.pagZ)
+    d.avisLectura=(d.avisLectura||'')+`Aquesta pàgina no tanca el document (no hi surt el TOTAL amb IVA ni diu que sigui l'última): comprova si en falta cap. `;
   d.progres='';
 }
 function aplicaCapçalera(d,j){
+  d.pagX=num(j.pag_x)||0; d.pagZ=num(j.pag_z)||0; d.esFinal=(j.es_final===true);
   d.kind = (j.tipus==='factura')?'factura':'albara';
   d.proveidor = String(j.proveidor||'').trim();
   d.numDoc = String(j.num||'').trim();
